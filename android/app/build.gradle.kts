@@ -16,18 +16,18 @@ android {
         versionName = "1.6"
 
         ndk {
-            // onnxruntime-android فقط این دو ABI را دارد — ۳۲بیت arm (v7a)
-            // پشتیبانی نمی‌شود؛ برای بقیه نسخه universal همه را دارد
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            // همه معماری‌ها: گوشی جدید (arm64)، گوشی قدیمی ۳۲بیت (v7a)،
+            // شبیه‌ساز (x86_64) و x86
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
         }
     }
 
-    // چند نسخه: جدا برای هر معماری + universal (همه‌سازگار)
+    // یک APK جدا برای هر معماری + یک universal همه‌سازگار
     splits {
         abi {
             isEnable = true
             reset()
-            include("arm64-v8a", "x86_64")
+            include("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
             isUniversalApk = true
         }
     }
