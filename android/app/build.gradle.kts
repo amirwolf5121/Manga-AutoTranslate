@@ -16,7 +16,7 @@ android {
         versionName = "1.6"
 
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += listOf("arm64-v8a")  // فقط گوشی — x86_64 (شبیه‌ساز) حذف شد تا APK سبک شود
         }
     }
 
