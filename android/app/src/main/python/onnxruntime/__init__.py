@@ -61,6 +61,21 @@ def get_device():
     return "CPU"
 
 
+def _jset_to_list(js):
+    """java.util.Set → list — چاکوپی روی Set مستقیم iter نمی‌دهد."""
+    out = []
+    try:
+        it = js.iterator()
+        while it.hasNext():
+            out.append(str(it.next()))
+    except Exception:
+        try:
+            out = [str(x) for x in js.toArray()]
+        except Exception:
+            pass
+    return out
+
+
 class NodeArg:
     def __init__(self, name, shape, dtype="tensor(float)"):
         self.name = name
@@ -149,8 +164,8 @@ class InferenceSession:
                     pass
         else:
             self._sess = _ENV.createSession(str(path_or_bytes))
-        self._in_names = [str(n) for n in self._sess.getInputNames()]
-        self._out_names = [str(n) for n in self._sess.getOutputNames()]
+        self._in_names = _jset_to_list(self._sess.getInputNames())
+        self._out_names = _jset_to_list(self._sess.getOutputNames())
 
     def get_inputs(self):
         infos = self._sess.getInputInfo()

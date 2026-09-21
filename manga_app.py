@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 
 APP_NAME = "مانگا مترجم"
-APP_VER = "1.6"
+APP_VER = "1.7"
 HERE = os.path.dirname(os.path.abspath(__file__))
 MANGA_PY = os.path.join(HERE, "manga.py")
 WORK_DIR = os.path.join(HERE, "workspace")

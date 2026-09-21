@@ -178,6 +178,8 @@ class MainActivity : AppCompatActivity() {
             setTextColor(TXT); textSize = 11f; typeface = Typeface.MONOSPACE
             background = rounded(CARD2, 12, 1)
             setPadding(dp(12), dp(10), dp(12), dp(10))
+            movementMethod = android.text.method.ScrollingMovementMethod()
+            isVerticalScrollBarEnabled = true
             text = "— لاگ بعد از شروع ترجمه اینجا می‌آید —"
         }
         logContent.addView(logBox, LinearLayout.LayoutParams(

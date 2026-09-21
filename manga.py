@@ -1104,7 +1104,9 @@ class RapidOCRBackend:
             print(f"[+] RapidOCR (ONNX, PP-OCRv5/v6) آماده | lang={lang}")
             return
         except Exception as e:
+            import traceback as _tb
             print(f"[!] RapidOCR (API جدید) لود نشد: {e}")
+            print("[!] " + _tb.format_exc()[-900:])
         if not _HAS_RAPIDOCR:
             raise ImportError("pip install rapidocr (یا rapidocr-onnxruntime)")
         self.engine = RapidOCR()
