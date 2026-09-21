@@ -1,0 +1,9 @@
+*.apk
+*.imy
+android/local.properties
+android/app/build/
+android/.gradle/
+__pycache__/
+*.pyc
+web_out.log
+mf_test.json

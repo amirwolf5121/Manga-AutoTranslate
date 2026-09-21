@@ -1,0 +1,57 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths: [ "android/**", "manga.py", "manga_app.py" ]
+  release:
+    types: [ published ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.10 (buildPython چاکوپی)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build APK
+        run: |
+          cd android
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          gradle :app:assembleDebug --no-daemon \
+            -PchaquopyBuildPython="$(command -v python)" \
+            -Dorg.gradle.jvmargs=-Xmx3g
+
+      - name: Rename APK
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk \
+             manga-translator-${{ github.ref_name }}.apk
+
+      - name: Upload artifact (هر بیلد)
+        uses: actions/upload-artifact@v4
+        with:
+          name: manga-translator-apk
+          path: manga-translator-*.apk
+
+      - name: Attach to Release (فقط روی release)
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: manga-translator-*.apk
