@@ -61,6 +61,19 @@ def get_device():
     return "CPU"
 
 
+def _jmap_to_dict(m):
+    """java.util.Map → dict — با iterator خود جاوا (Set قابل iter مستقیم نیست)."""
+    out = {}
+    try:
+        it = m.entrySet().iterator()
+        while it.hasNext():
+            e = it.next()
+            out[str(e.getKey())] = str(e.getValue())
+    except Exception:
+        pass
+    return out
+
+
 def _jset_to_list(js):
     """java.util.Set → list — چاکوپی روی Set مستقیم iter نمی‌دهد."""
     out = []
@@ -139,10 +152,21 @@ def _to_numpy(value):
 
 
 class _ModelMeta:
-    producer_name = ""
-    graph_name = ""
-    description = ""
-    custom_metadata_map = {}
+    def __init__(self, sess=None):
+        self.producer_name = ""
+        self.graph_name = ""
+        self.description = ""
+        self.custom_metadata_map = {}
+        if sess is None:
+            return
+        try:
+            md = sess.getMetadata()
+            self.custom_metadata_map = _jmap_to_dict(md.getCustomMetadata())
+            self.producer_name = str(md.getProducerName() or "")
+            self.graph_name = str(md.getGraphName() or "")
+            self.description = str(md.getDescription() or "")
+        except Exception:
+            pass
 
 
 class InferenceSession:
@@ -188,7 +212,13 @@ class InferenceSession:
         return [NodeArg(n) for n in self._out_names]
 
     def get_modelmeta(self):
-        return _ModelMeta()
+        return _ModelMeta(self._sess)
+
+    def get_providers(self):
+        return ["CPUExecutionProvider"]
+
+    def get_provider_options(self):
+        return {"CPUExecutionProvider": {}}
 
     def run(self, output_names, input_feed, run_options=None, **kw):
         feed = _HashMap()
