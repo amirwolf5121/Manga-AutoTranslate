@@ -18,6 +18,12 @@ jobs:
           curl -fL --retry 3 -o models/ch_ppocr_mobile_v2.0_cls_mobile.onnx "$base/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx"
           curl -fL --retry 3 -o models/korean_PP-OCRv5_rec_mobile.onnx "$base/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx"
           curl -fL --retry 3 -o models/japan_PP-OCRv4_rec_mobile.onnx  "$base/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile.onnx"
+          pd="https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/paddle"
+          curl -fL --retry 3 -o models/ppocr_keys_v1.txt      "$pd/PP-OCRv4/rec/ch_PP-OCRv4_rec_mobile/ppocr_keys_v1.txt"
+          curl -fL --retry 3 -o models/en_dict.txt            "$pd/PP-OCRv4/rec/en_PP-OCRv4_rec_mobile/en_dict.txt"
+          curl -fL --retry 3 -o models/korean_dict.txt        "$pd/PP-OCRv4/rec/korean_PP-OCRv4_rec_mobile/korean_dict.txt"
+          curl -fL --retry 3 -o models/japan_dict.txt         "$pd/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile/japan_dict.txt"
+          curl -fL --retry 3 -o models/arabic_dict.txt        "$pd/PP-OCRv4/rec/arabic_PP-OCRv4_rec_mobile/arabic_dict.txt"
           ls -la models
 
       - name: Ensure "models" release exists
