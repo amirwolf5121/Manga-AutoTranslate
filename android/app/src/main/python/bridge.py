@@ -359,6 +359,13 @@ def _run(job):
             job["done"] = True
         _log(job, "✅ تمام شد — %d صفحه، خروجی: %s" % (len(imgs), dl or "-"))
     except Exception:
+        # خروجی موتور تا لحظه خطا — ارور واقعی مخفی‌شده را نشان می‌دهد
+        try:
+            _txt = buf.getvalue()
+            if _txt.strip():
+                _log(job, _txt[-4000:])
+        except Exception:
+            pass
         _log(job, "❌ خطا:\n" + traceback.format_exc()[-2500:])
         with STATE["lock"]:
             job["done"] = True
