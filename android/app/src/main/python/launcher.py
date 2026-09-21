@@ -171,6 +171,54 @@ def apply_updates(files_dir):
     return upd_dir
 
 
+def _pip_runtime(files_dir):
+    """نصب SDKهای واقعی در اجرای اول — فقط پکیج‌های pure-python.
+
+    openai نسخه‌ای انتخاب شده که pydantic v1 (خالص) می‌پذیرد؛ نسخه‌های
+    جدید openai و همه نسخه‌های google-genai به pydantic-core (native)
+    نیاز دارند که روی اندروید wheel ندارد و pip گوشی هم کامپایلر ندارد.
+    برای Gemini از provider «gemini-openai» (endpoint سازگار openai)
+    استفاده کن.
+    """
+    site = os.path.join(files_dir, "site_pkgs")
+    os.makedirs(site, exist_ok=True)
+    if site not in sys.path:
+        sys.path.append(site)
+    if os.path.isfile(os.path.join(site, ".pip_done")):
+        return
+    try:
+        from pip._internal.cli.main import main as _pipmain
+    except Exception:
+        try:
+            import pip as _p
+            _pipmain = getattr(_p, "main", None)
+        except Exception:
+            _pipmain = None
+    if _pipmain is None:
+        _log("pip runtime در دسترس نیست — SDKها با MangaTranslator نصب می‌شوند.")
+        return
+    groups = [
+        ["pydantic==1.10.17"],
+        ["typing-extensions", "sniffio", "certifi", "idna", "h11", "httpcore",
+         "anyio", "httpx", "distro"],
+        ["openai==1.35.13"],
+    ]
+    for args in groups:
+        try:
+            _log("pip install: " + " ".join(args))
+            rc = _pipmain(["install", "--no-cache-dir", "--no-deps",
+                           "--target", site, "--quiet"] + args)
+            _log(("✔ " if rc == 0 else "✘ نشد: ") + " ".join(args))
+        except SystemExit as e:
+            _log("pip exit: %s" % e)
+        except Exception as e:
+            _log("pip خطا: %s" % e)
+    try:
+        open(os.path.join(site, ".pip_done"), "w").write("ok")
+    except Exception:
+        pass
+
+
 def main(files_dir=None):
     files_dir = files_dir or os.environ.get("MANGA_FILES_DIR") or os.getcwd()
     os.environ["MANGA_FILES_DIR"] = files_dir
@@ -178,6 +226,10 @@ def main(files_dir=None):
     os.environ.setdefault("HOME", files_dir)
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        _pip_runtime(files_dir)
+    except Exception:
+        traceback.print_exc()
     try:
         upd_dir = apply_updates(files_dir)
         # updates باید «قبل از» dir داخلی باشد تا manga.py / manga_app.py

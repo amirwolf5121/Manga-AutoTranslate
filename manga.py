@@ -1252,6 +1252,14 @@ PROVIDER_PRESETS = {
         "default_model": "gemini-3.8-flash",
         "env_key": "GEMINI_API_KEY",
     },
+    "gemini-openai": {
+        # Gemini از طریق endpoint سازگار با OpenAI — برای دستگاه‌هایی که
+        # SDK google-genai رویشان نصب نمی‌شود (اندروید: pydantic-core native)
+        "type": "openai",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "default_model": "gemini-2.5-flash",
+        "env_key": "GEMINI_API_KEY",
+    },
     "openai": {
         "type": "openai",
         "base_url": "https://api.openai.com/v1",
