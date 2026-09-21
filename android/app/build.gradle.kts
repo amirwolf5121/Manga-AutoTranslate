@@ -16,7 +16,19 @@ android {
         versionName = "1.6"
 
         ndk {
-            abiFilters += listOf("arm64-v8a")  // فقط گوشی — x86_64 (شبیه‌ساز) حذف شد تا APK سبک شود
+            // onnxruntime-android فقط این دو ABI را دارد — ۳۲بیت arm (v7a)
+            // پشتیبانی نمی‌شود؛ برای بقیه نسخه universal همه را دارد
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+    }
+
+    // چند نسخه: جدا برای هر معماری + universal (همه‌سازگار)
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "x86_64")
+            isUniversalApk = true
         }
     }
 
@@ -72,6 +84,9 @@ chaquopy {
             install("opencv-python==4.5.1.48")
             install("pillow")
             install("shapely")
+            // سخت‌وابسته‌های موتور — manga.py بدون آن‌ها import نمی‌شود
+            install("arabic-reshaper")
+            install("python-bidi==0.4.2")
             install("pyyaml")
             install("requests")
             install("six")
