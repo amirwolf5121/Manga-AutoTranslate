@@ -180,6 +180,11 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(12), dp(10), dp(12), dp(10))
             movementMethod = android.text.method.ScrollingMovementMethod()
             isVerticalScrollBarEnabled = true
+            // وقتی روی لاگ می‌کشی، ScrollView بیرونی بouce اسکرول را نمی‌دزدد
+            setOnTouchListener { v, ev ->
+                v.parent.requestDisallowInterceptTouchEvent(true)
+                false
+            }
             text = "— لاگ بعد از شروع ترجمه اینجا می‌آید —"
         }
         logContent.addView(logBox, LinearLayout.LayoutParams(

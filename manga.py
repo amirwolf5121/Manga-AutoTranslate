@@ -1046,6 +1046,62 @@ class RTDetrV2ONNXDetector:
         return MangaTranslator._drop_contained_boxes(cleaned, contain_thresh=0.68)
 
 
+# مدل‌های OCR داخل APK نیستند — mirror گیت‌هاب (در ایران در دسترس) اول،
+# modelscope بعد. rapidocr خودش SHA256 را بعداً وریفای می‌کند.
+_RAPIDOCR_MIRROR = ("https://github.com/amirwolf5121/Manga-AutoTranslate/"
+                    "releases/download/models/")
+_RAPIDOCR_MS = ("https://www.modelscope.cn/models/RapidAI/RapidOCR/"
+                "resolve/v3.9.2/onnx")
+_RAPIDOCR_FILES = {
+    "PP-OCRv6_det_small.onnx":
+        _RAPIDOCR_MS + "/PP-OCRv6/det/PP-OCRv6_det_small.onnx",
+    "PP-OCRv6_rec_small.onnx":
+        _RAPIDOCR_MS + "/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx",
+    "ch_ppocr_mobile_v2.0_cls_mobile.onnx":
+        _RAPIDOCR_MS + "/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+    "korean_PP-OCRv5_rec_mobile.onnx":
+        _RAPIDOCR_MS + "/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx",
+    "japan_PP-OCRv4_rec_mobile.onnx":
+        _RAPIDOCR_MS + "/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile.onnx",
+}
+
+
+def _ensure_rapidocr_models(mdir, files=None):
+    """فایل‌های مدل غایب را از mirror (فال‌بک modelscope) دانلود می‌کند."""
+    import shutil
+    import urllib.request
+    wanted = files or list(_RAPIDOCR_FILES)
+    for fname in wanted:
+        dst = os.path.join(mdir, fname)
+        if os.path.isfile(dst) and os.path.getsize(dst) > 100_000:
+            continue
+        done = False
+        for url in (_RAPIDOCR_MIRROR + fname, _RAPIDOCR_FILES.get(fname)):
+            if not url:
+                continue
+            try:
+                print(f"  ⬇ {fname} ...")
+                req = urllib.request.Request(
+                    url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=300) as r,                         open(dst + ".part", "wb") as f:
+                    shutil.copyfileobj(r, f)
+                if os.path.getsize(dst + ".part") > 100_000:
+                    os.replace(dst + ".part", dst)
+                    print(f"  ✔ {fname}")
+                    done = True
+                    break
+            except Exception as e:
+                host = url.split("/")[2] if url else "?"
+                print(f"  [!] {fname} از {host} نشد: {e}")
+        if not done:
+            print(f"  [!] دانلود {fname} ناموفق — اینترنت/VPN را چک کن")
+        try:
+            if os.path.isfile(dst + ".part"):
+                os.remove(dst + ".part")
+        except Exception:
+            pass
+
+
 class RapidOCRBackend:
     
 
@@ -1089,9 +1145,11 @@ class RapidOCRBackend:
             except Exception:
                 _mdir = None
             _base = {"Global.model_root_dir": _mdir} if _mdir else {}
-            if _mdir and not _os.path.isfile(
-                    _os.path.join(_mdir, "PP-OCRv6_det_small.onnx")):
-                print("[!] مدل‌های OCR روی دستگاه نیست (~۳۱MB) — دانلود خودکار…")
+            if _mdir:
+                try:
+                    _ensure_rapidocr_models(_mdir)
+                except Exception as _e:
+                    print(f"[!] پیش‌دانلود مدل‌ها ناموفق: {_e}")
             if _rec_params is not None:
                 _p = dict(_rec_params)
                 _p.update(_base)
