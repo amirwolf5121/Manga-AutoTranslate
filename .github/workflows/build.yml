@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # برای چسباندن APK به Release
     steps:
       - name: Checkout
         uses: actions/checkout@v4
