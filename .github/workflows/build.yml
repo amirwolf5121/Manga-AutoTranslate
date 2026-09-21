@@ -36,10 +36,21 @@ jobs:
             -PchaquopyBuildPython="$(command -v python)" \
             -Dorg.gradle.jvmargs=-Xmx3g
 
-      - name: Rename APK
+      - name: Rename APKs (per-ABI + universal)
         run: |
-          cp android/app/build/outputs/apk/debug/app-debug.apk \
-             manga-translator-${{ github.ref_name }}.apk
+          cd android/app/build/outputs/apk/debug
+          for f in app-*-debug.apk app-debug.apk; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              *arm64*) abi="arm64" ;;
+              *x86_64*) abi="x86_64" ;;
+              *universal*) abi="universal" ;;
+              *) abi="all" ;;
+            esac
+            cp "$f" "manga-translator-${{ github.ref_name }}-$abi.apk"
+          done
+          cp manga-translator-*.apk "$GITHUB_WORKSPACE/"
+          ls -la "$GITHUB_WORKSPACE"/manga-translator-*.apk
 
       - name: Upload artifact (هر بیلد)
         uses: actions/upload-artifact@v4
