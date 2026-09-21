@@ -59,6 +59,7 @@ class MainActivity : AppCompatActivity() {
     private val fieldViews = HashMap<String, View>()
     private val pickedFiles = HashMap<String, String>()
     private var pickerField: String? = null
+    private var logFollow = true  // لاگ خودکار تا پایین می‌آید تا کاربر بالا بکشد
     private val ui = Handler(Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences("manga_settings", MODE_PRIVATE) }
 
@@ -183,6 +184,11 @@ class MainActivity : AppCompatActivity() {
             // وقتی روی لاگ می‌کشی، ScrollView بیرونی بouce اسکرول را نمی‌دزدد
             setOnTouchListener { v, ev ->
                 v.parent.requestDisallowInterceptTouchEvent(true)
+                if (ev.action == android.view.MotionEvent.ACTION_UP ||
+                    ev.action == android.view.MotionEvent.ACTION_CANCEL) {
+                    // اگر کاربر پایین لاگ است، دوباره دنبال‌کردن ادامه پیدا می‌کند
+                    logFollow = !logBox.canScrollVertically(1)
+                }
                 false
             }
             text = "— لاگ بعد از شروع ترجمه اینجا می‌آید —"
@@ -855,6 +861,20 @@ class MainActivity : AppCompatActivity() {
 
     private fun optInt(o: JSONObject, key: String, d: Int): Int = o.optInt(key, d)
 
+    private fun setLog(t: String) {
+        logBox.text = t
+        if (logFollow) {
+            logBox.post {
+                try {
+                    val l = logBox.layout ?: return@post
+                    val bottom = l.getLineBottom(l.lineCount - 1) - logBox.height + dp(8)
+                    logBox.scrollTo(0, bottom.coerceAtLeast(0))
+                } catch (e: Exception) {
+                }
+            }
+        }
+    }
+
     private fun onStartJob() {
         try {
             val p = collect()
@@ -881,7 +901,7 @@ class MainActivity : AppCompatActivity() {
         ui.postDelayed({
             try {
                 val st = JSONObject(bridge.callAttr("poll").toString())
-                logBox.text = st.optString("log", "")
+                setLog(st.optString("log", ""))
                 if (st.optBoolean("done")) {
                     runBtn.isEnabled = true
                     runBtn.text = "🚀  شروع ترجمه"

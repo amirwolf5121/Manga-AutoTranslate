@@ -625,10 +625,21 @@ class LamaONNX:
         cache_root = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "manga_translator_models"
         cache_root.mkdir(parents=True, exist_ok=True)
 
+        _m = _mirror_model(cls.FILE)
+        if _m:
+            return _m
         print(f"[*] دانلود مدل LaMa ONNX از {cls.REPO} ...")
         if hf_hub_download is None:
             raise RuntimeError("huggingface_hub لازم است")
-        return hf_hub_download(repo_id=cls.REPO, filename=cls.FILE, cache_dir=cache_dir)
+        cand = hf_hub_download(repo_id=cls.REPO, filename=cls.FILE, cache_dir=cache_dir)
+        try:
+            import shutil as _sh
+            _dst = os.path.join(_model_cache_dir("det_models"), cls.FILE)
+            if not os.path.isfile(_dst):
+                _sh.copyfile(cand, _dst)
+        except Exception:
+            pass
+        return cand
 
     def _pick_size(self, w: int, h: int) -> int:
         m = max(int(w), int(h))
@@ -818,6 +829,10 @@ class RTDetrV2ONNXDetector:
             last_err = None
             for fname in self.DET_FILES:
                 try:
+                    _m = _mirror_model(fname)
+                    if _m:
+                        model_path = _m
+                        break
                     print(f"[*] دانلود مدل RT-DETR ONNX از {self.DET_REPO}/{fname} ...")
                     if hf_hub_download is None:
                         raise RuntimeError("huggingface_hub لازم است")
@@ -1064,6 +1079,46 @@ _RAPIDOCR_FILES = {
     "japan_PP-OCRv4_rec_mobile.onnx":
         _RAPIDOCR_MS + "/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile.onnx",
 }
+
+
+def _dl_to(url, dst):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=900) as r, \
+            open(dst + ".part", "wb") as f:
+        shutil.copyfileobj(r, f)
+    if os.path.getsize(dst + ".part") > 1000:
+        os.replace(dst + ".part", dst)
+        return dst
+    raise RuntimeError("فایل ناقص")
+
+
+def _model_cache_dir(sub):
+    d = os.path.join(os.environ.get("MANGA_FILES_DIR") or os.getcwd(), sub)
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+def _mirror_model(fname):
+    """اگر مدل در cache محلی نیست، از mirror گیت‌هاب دانلود کن → مسیر یا None."""
+    loc = os.path.join(_model_cache_dir("det_models"), fname)
+    if os.path.isfile(loc) and os.path.getsize(loc) > 1000:
+        return loc
+    try:
+        print(f"    [mirror] {fname} ...")
+        _dl_to(_RAPIDOCR_MIRROR + fname, loc)
+        return loc
+    except Exception as e:
+        print(f"    [!] mirror نشد: {e}")
+        try:
+            if os.path.isfile(loc + ".part"):
+                os.remove(loc + ".part")
+        except Exception:
+            pass
+        return None
 
 
 def _ensure_rapidocr_models(mdir, files=None):
