@@ -1643,6 +1643,9 @@ def uncensor_swears(text: str) -> str:
 
 class MangaTranslator:
     _LAMA_MIN_VRAM_GB = 3.5
+    # آستانهٔ لاما روی گوشی (v1.22): زیر ۵GB رم کل، ORT مدل ۱۹۸MB را نمی‌کشد
+    _ANDROID_LAMA_MIN_TOTAL_GB = 5.0
+    _ANDROID_LAMA_MIN_AVAIL_GB = 2.0
 
     @staticmethod
     def _detect_paddle_gpu() -> bool:
@@ -2073,10 +2076,43 @@ class MangaTranslator:
             if len(self._api_keys) > 1:
                 print(f"    {len(self._api_keys)} کلید API (جابه‌جایی خودکار)")
 
+    @staticmethod
+    def _total_ram_gb() -> float:
+        """رم کل دستگاه از /proc/meminfo (اندروید/لینوکس) — صفر اگر نبود."""
+        try:
+            with open("/proc/meminfo", encoding="ascii") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        return int(line.split()[1]) / (1024 * 1024)
+        except Exception:
+            pass
+        return 0.0
+
     def _get_lama(self):
         
         
         if self._lama is None and self.use_lama:
+            # 🩹 تشخیص خودکار توان گوشی (v1.22): مدل ~۱۹۸MB + حافظهٔ کاری ORT
+            # روی گوشی کم‌رم → کشتن اپ توسط سیستم (LMK). زیر آستانه‌ها لاما اصلاً
+            # تلاش نکن و با پیام روشن به OpenCV برگرد.
+            if _on_android():
+                total = self._total_ram_gb()
+                avail = self._available_ram_gb()
+                if total and total < self._ANDROID_LAMA_MIN_TOTAL_GB:
+                    print(f"[!] LaMa فعال نشد: رم کل گوشی {total:.1f}GB است "
+                          f"(حداقل {self._ANDROID_LAMA_MIN_TOTAL_GB:.0f}GB لازم است) "
+                          f"→ پاک‌سازی OpenCV (سبک و سریع).")
+                    self.use_lama = False
+                    self._inpainter_name = "OpenCV"
+                    return None
+                if avail and avail < self._ANDROID_LAMA_MIN_AVAIL_GB:
+                    print(f"[!] الان رم آزاد گوشی کم است ({avail:.1f}GB) — LaMa این بار "
+                          f"اجرا نشد → OpenCV. اپ‌های بیکار را ببند و دوباره امتحان کن.")
+                    self.use_lama = False
+                    self._inpainter_name = "OpenCV"
+                    return None
+                print(f"[*] رم گوشی: کل {total:.1f}GB / آزاد {avail:.1f}GB → "
+                      f"LaMa-Manga روی CPU اجرا می‌شود (کندتر ولی تمیزتر از OpenCV).")
             try:
                 print("    [*] بارگذاری LaMa-Manga ONNX (fine-tune مانگا) ...")
                 self._lama = LamaMangaONNX(
@@ -5098,13 +5134,118 @@ class MangaTranslator:
         reshaped = arabic_reshaper.reshape(text)
         return get_display(reshaped)
 
+    # ---------- گارد فونت: کشف «مربع» (تو‌فو / گلیف ناموجود) قبل از رندر (v1.22) ----------
+    # ریشهٔ گزارش کاربر: فونت لحن shout (لالزار) فرم‌های presentation ایزوله را
+    # در cmap نداشت → همه‌جای متن مربع می‌افتاد. پایپ‌لاین رندر ما
+    # (arabic_reshaper + PIL BASIC) به فرم‌های U+FB50–U+FEFF نیاز دارد؛ فونتی
+    # که آن‌ها را نداشته باشد باید قبل از رندر کنار گذاشته شود، نه اینکه مربع بکشد.
+    _FA_PROBE_CACHE: Optional[str] = None
+    _FONT_COVER_CACHE: Dict[str, bool] = {}
+
+    @staticmethod
+    def _fa_probe_text() -> str:
+        """متن کاوش: همهٔ فرم‌های presentation الفبای فارسی (ایزوله/آغازه/میانه/پایان)
+        + ارقام فارسی/لاتین + نقطه‌گذاری رایج. یک‌بار ساخته و کش می‌شود."""
+        if MangaTranslator._FA_PROBE_CACHE is not None:
+            return MangaTranslator._FA_PROBE_CACHE
+        letters = "ابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهیآأإئءؤئةی"
+        parts: List[str] = []
+        for _L in letters:
+            parts += [_L, _L + _L, "ب" + _L + "ب", "ب" + _L, _L + "ب"]
+        sample = " ".join(parts) + " ۰۱۲۳۴۵۶۷۸۹ 0123456789 .,!?…:;()«»-"
+        try:
+            shaped = get_display(arabic_reshaper.reshape(sample))
+        except Exception:
+            shaped = sample
+        txt = "".join(sorted({c for c in shaped
+                              if not c.isspace() and c != "\u200c"}))
+        MangaTranslator._FA_PROBE_CACHE = txt
+        return txt
+
+    @staticmethod
+    def _font_covers(path: str) -> bool:
+        """آیا فونت برای متن فارسیِ شکل‌داده‌شده گلیف واقعی دارد؟
+        تشخیص notdef (مربع) با رندر تصویری: گلیف کاراکتر مرجع PUA
+        (که در هیچ فونتی نیست) با گلیف هدف مقایسه می‌شود — بدون fontTools."""
+        if not path or not os.path.isfile(path):
+            return False
+        key = os.path.abspath(path)
+        cached = MangaTranslator._FONT_COVER_CACHE.get(key)
+        if cached is not None:
+            return cached
+        ok = True
+        try:
+            f = ImageFont.truetype(path, 32)
+
+            def _rb(ch: str) -> bytes:
+                im = Image.new("L", (96, 96), 0)
+                ImageDraw.Draw(im).text((24, 24), ch, font=f, fill=255)
+                return im.tobytes()
+
+            refs = {_rb("\uE0FA"), _rb("\uE0F9"), _rb("\uE0EF")}
+            for _ch in MangaTranslator._fa_probe_text():
+                b = _rb(_ch)
+                if not any(b) or b in refs:
+                    ok = False
+                    break
+        except Exception:
+            ok = True  # اگر خود کاوش خطا خورد، فونت را رد نکن (رفتار قدیم)
+        MangaTranslator._FONT_COVER_CACHE[key] = ok
+        return ok
+
+    def _warn_font(self, key: str, msg: str) -> None:
+        seen = getattr(self, "_font_warned", None)
+        if seen is None:
+            seen = set()
+            self._font_warned = seen
+        if key not in seen:
+            seen.add(key)
+            print(msg)
+
+    def _cover_fallback_font(self, exclude: str) -> str:
+        """اولین فونت پوشش‌دهنده از کنار فونت اصلی یا فونت‌های سیستم اندروید."""
+        cands: List[str] = []
+        d = os.path.dirname(os.path.abspath(exclude or self.font_path or ""))
+        try:
+            if os.path.isdir(d):
+                cands += [os.path.join(d, f) for f in sorted(os.listdir(d))
+                          if f.lower().endswith((".ttf", ".otf"))]
+        except Exception:
+            pass
+        cands += [
+            "/system/fonts/NotoNaskhArabic-Regular.ttf",
+            "/system/fonts/NotoNaskhArabicUI-Regular.ttf",
+            "/system/fonts/NotoSansArabic-Regular.ttf",
+            "/system/fonts/NotoSansArabicUI-Regular.ttf",
+            "/system/fonts/DroidSansArabic.ttf",
+            "/system/fonts/NotoNaskhArabic-Bold.ttf",
+        ]
+        ex = os.path.abspath(exclude) if exclude else ""
+        for c in cands:
+            if os.path.isfile(c) and os.path.abspath(c) != ex and self._font_covers(c):
+                return c
+        return ""
+
     def _load_font(self, size: int, style: str = "") -> ImageFont.FreeTypeFont:
-        
         path = self.font_path
         if style:
             cand = (getattr(self, "font_by_style", None) or {}).get(style) or path
             if cand and os.path.isfile(cand):
-                path = cand
+                if self._font_covers(cand):
+                    path = cand
+                else:
+                    self._warn_font(
+                        "style:" + style,
+                        f"[!] فونت لحن «{style}» ({os.path.basename(cand)}) گلیف‌های "
+                        f"فارسی را کامل ندارد (به‌جای حرف مربع می‌افتاد) → فونت اصلی.")
+        if not self._font_covers(path):
+            alt = self._cover_fallback_font(path)
+            if alt:
+                self._warn_font(
+                    "main:" + str(path),
+                    f"[!] فونت اصلی ({os.path.basename(str(path))}) حروف فارسی را کامل "
+                    f"ندارد → {os.path.basename(alt)}")
+                path = alt
         return ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.BASIC)
 
     @staticmethod

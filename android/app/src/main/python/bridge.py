@@ -654,6 +654,15 @@ def _run(job):
                     if p.get("instruction") else None,
                 )
                 tr.batch_workers = _i("batchw", 3)  # مثل CLI: بعد از ساخت
+                # 🩹 v1.22: «use_lama» از تنظیمات اپ تا امروز همین‌جا دور ریخته
+                # می‌شد (docstring بود ولی هیچ‌وقت به موتور پاس نمی‌داد) → حتی با
+                # فعال‌کردن تیک LaMa، همیشه OpenCV اجرا می‌شد. حالا واقعاً فعال می‌شود؛
+                # گیت رم (تشخیص خودکار توان گوشی) داخل manga.py _get_lama است.
+                if bool(p.get("use_lama")):
+                    tr.use_lama = True
+                    _log(job, "🩹 پاک‌سازی LaMa-Manga فعال شد (تنظیمات) — بار اول "
+                              "مدل ~۱۹۸MB دانلود می‌شود؛ کندتر ولی تمیزتر از OpenCV."
+                              " اگر رم گوشی کم باشد خودکار به OpenCV برمی‌گردد.")
                 if font_by_style:
                     tr.font_by_style = font_by_style
                     tr.style_fonts = True
@@ -664,16 +673,34 @@ def _run(job):
             _detach_log_handlers(handlers)
 
         # خروجی‌ها: فایل نهایی + صفحات (از cache خروجی برای نمایش)
+        # ⚠ فیکس «دو عکس» (v1.22): قبلاً کل cache walk می‌شد و پوشه‌های
+        # src/normalized/stitched (کپیِ صفحهٔ ورودی قبل ترجمه) هم به‌عنوان
+        # خروجی جمع می‌شد → کنار عکس ترجمه‌شده، عکس اصلی هم نمایش داده می‌شد.
+        # حالا فقط زیرپوشه‌های out*/ (خروجی) و debug*/ (دیباگ).
         imgs, dbg = [], []
         cache = job["out_file_path"] + ".cache"
         for root, _d, files in os.walk(cache):
+            parts = [p.lower() for p in root.split(os.sep)]
+            is_dbg = any(p.startswith("debug") for p in parts)
+            is_out = any(p == "out" or p.startswith("out_") for p in parts)
+            if not is_out and not is_dbg:
+                continue
             for f in sorted(files):
+                if not f.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+                    continue
                 lp = os.path.join(root, f)
-                if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-                    if "debug" in f.lower() or "debug" in root.lower():
-                        dbg.append(lp)
-                    else:
-                        imgs.append(lp)
+                if is_dbg or "debug" in f.lower():
+                    dbg.append(lp)
+                else:
+                    imgs.append(lp)
+        # ترتیب طبیعی صفحه‌ها (page_2 قبل از page_10)
+        import re as _re
+
+        def _natkey(s):
+            return [int(t) if t.isdigit() else t for t in _re.split(r"(\d+)", s)]
+
+        imgs.sort(key=_natkey)
+        dbg.sort(key=_natkey)
         if not imgs:
             for root, _d, files in os.walk(job["out"]):
                 for f in sorted(files):

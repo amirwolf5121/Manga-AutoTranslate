@@ -849,7 +849,8 @@ class MainActivity : AppCompatActivity() {
         map.put("instruction", firstNonEmpty(o, "instruction_text", "instruction") ?: "")
         map.put("story_brief", optBoolD(o, true, "story_brief"))
         // تنظیمات پیشرفته — اگر فیلدش در manifest نبود، دیفالت خود موتور می‌ماند
-        for (k in listOf("workers", "bubbles", "batchw", "timeout", "maxre", "reqdelay", "temp", "api_base")) {
+        // (api_base از v1.22 حذف شد — فیلد آدرس Ollama دیگر در UI نیست)
+        for (k in listOf("workers", "bubbles", "batchw", "timeout", "maxre", "reqdelay", "temp")) {
             if (o.has(k) && !o.isNull(k)) map.put(k, o.get(k))
         }
         // فونت‌ها: هر فیلد file/bool باقی‌مانده (فونت اصلی + لحن‌ها از manga_app.py)
@@ -1222,7 +1223,16 @@ class MainActivity : AppCompatActivity() {
         private fun applySize() {
             val w = (screenW * zoom).toInt().coerceAtLeast(1)
             val h = (w * ratio).toInt().coerceAtLeast(1)
-            page.layoutParams = ViewGroup.LayoutParams(w, h)
+            // ⚠ فیکس کرش (v1.22): قبلاً «page.layoutParams = ViewGroup.LayoutParams(w,h)»
+            // بود — پارامتر خام به والد FrameLayout‌محور (HorizontalScrollView) موقع
+            // measure به MarginLayoutParams کست می‌شود → ClassCastException → کرش
+            // «نمایش زدم برنامه کرش کرد». حالا همان پارامتر موجود تغییر می‌کند.
+            val lp = page.layoutParams as? ViewGroup.MarginLayoutParams ?: return
+            if (lp.width != w || lp.height != h) {
+                lp.width = w
+                lp.height = h
+                page.layoutParams = lp
+            }
         }
 
         /** ImageView صفحه — همهٔ لمس‌ها را می‌گیرد و خودش توزیع می‌کند:

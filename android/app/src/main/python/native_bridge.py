@@ -8,10 +8,10 @@
 
   ۱) health(): اگر manga.py یا manga_app.py خراب باشد، کامل می‌گوید «کدام فایل»
      خرابه + traceback کامل + وضعیت فایل‌ها (درخواست کاربر).
-  ۲) Ollama لوکال: بدون توکن کار می‌کند، آدرس سرور (api_base) قابل تنظیم است،
+  ۲) Ollama لوکال: بدون توکن کار می‌کند، فقط روی همین دستگاه (آدرس پیش‌فرض localhost:11434) —
      مدل به‌صورت خودکار از خود Ollama کشف می‌شود و قطع‌بودن اتصال پیام واضح
      فارسی می‌دهد — بدون هیچ تغییر در manga.py.
-  ۳) manifest(): فیلد «آدرس سرور Ollama» را به UI اضافه می‌کند.
+  ۳) manifest(): منیفست UI را از manga_app.py برمی‌گرداند (فیلد آدرس Ollama در v1.22 حذف شد).
   ۴) start_job(): فایل ورودی بی‌پسوند (pick گالری) را قبل از موتور اصلاح می‌کند.
 
 همه توابع bridge (manifest/start_job/poll/cancel) از اینجا delegate می‌شوند.
@@ -180,42 +180,21 @@ def _find_culprit(tb_text):
 
 
 # ---------------------------------------------------------------- manifest
-_API_BASE_FIELD = {
-    "id": "api_base",
-    "type": "text",
-    "label": "آدرس سرور Ollama (فقط برای Ollama)",
-    "default": "",
-}
+# ⚠ v1.22 — فیلد «آدرس سرور Ollama» (api_base) به‌خواست کاربر کلاً حذف شد.
+# Ollama اگر انتخاب شود با آدرس پیش‌فرض http://localhost:11434/v1 کار می‌کند
+# (اجرا روی خود گوشی/Termux). هیچ فیلدی به منیفست تزریق نمی‌شود.
 
 
 def manifest():
-    """manifest اصلی bridge + تزریق فیلد آدرس Ollama در بخش مترجم."""
+    """منیفست اصلی bridge — بدون تزریق فیلد آدرس Ollama (حذف‌شده در v1.22)."""
     import bridge
-    out = bridge.manifest()
-    try:
-        mf = json.loads(out)
-        secs = mf.get("sections", [])
-        target = None
-        for s in secs:
-            t = str(s.get("title") or "")
-            if "مترجم" in t or "هوش مصنوعی" in t:
-                target = s
-                break
-        fields = target.get("fields") if target is not None else None
-        if fields is None and secs:
-            fields = secs[-1].setdefault("fields", [])
-        if fields is not None:
-            ids = [f.get("id") for f in fields if isinstance(f, dict)]
-            if "api_base" not in ids:
-                fields.append(dict(_API_BASE_FIELD))
-        out = json.dumps(mf, ensure_ascii=False)
-    except Exception:
-        traceback.print_exc()
-    return out
+    return bridge.manifest()
 
 
 # ---------------------------------------------------------------- ollama
 def _ollama_base(p):
+    # v1.22: فیلد آدرس از UI حذف شد — فقط آدرس پیش‌فرض لوکال.
+    # (اگر پارامتر قدیمی api_base در params باشد، همچنان احترام می‌گذرد.)
     b = str(p.get("api_base") or "").strip().rstrip("/")
     if b and not b.endswith("/v1"):
         b += "/v1"
@@ -244,11 +223,10 @@ def _ollama_check(p):
         return (
             "اتصال به Ollama برقرار نشد (%s)\n"
             "│  خطا: %s\n"
-            "├─ اگه Ollama روی کامپیوترته: توی فیلد «آدرس سرور Ollama» این را بزن:\n"
-            "│     http://IP-کامپیوتر:11434/v1   (مثل http://192.168.1.10:11434/v1)\n"
-            "│  و روی کامپیوتر: OLLAMA_HOST=0.0.0.0 ollama serve\n"
-            "└─ اگه روی خود گوشی (Termux) است: مطمئن شو ollama serve در حال اجراست."
-            % (host, type(e).__name__)
+            "├─ آدرس استفاده‌شده: %s (پیش‌فرض لوکال)\n"
+            "├─ اگه Ollama روی خود گوشی (Termux) است: مطمئن شو «ollama serve» در حال اجراست\n"
+            "└─ نکته: از v1.22 فیلد آدرس از تنظیمات حذف شده؛ Ollama فقط روی همین دستگاه پشتیبانی می‌شود."
+            % (host, type(e).__name__, host)
         ), base
 
     if not str(p.get("model") or "").strip() and models:
