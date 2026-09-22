@@ -971,24 +971,31 @@ class MainActivity : AppCompatActivity() {
         st.optJSONArray("images")?.let { a -> for (i in 0 until a.length()) images.add(a.optString(i)) }
         st.optJSONArray("debug_images")?.let { a -> for (i in 0 until a.length()) debug.add(a.optString(i)) }
         val outFile = st.optString("out_file", "")
+        val hasOutFile = outFile.isNotBlank() && File(outFile).isFile()
 
-        resultsBox.addView(resBtn("📖  نمایش (${images.size} صفحه)", images.isNotEmpty()) {
-            if (images.isNotEmpty()) viewer(images, 0)
-        })
-        if (outFile.isNotBlank() && File(outFile).isFile()) {
+        // ⚠ درخواست کاربر: اگر واقعاً تصویری ساخته نشده، دکمهٔ آن اصلاً نشان داده نشود
+        if (images.isNotEmpty()) {
+            resultsBox.addView(resBtn("📖  نمایش (${images.size} صفحه)", true) {
+                viewer(images)
+            })
+        }
+        if (hasOutFile) {
             resultsBox.addView(resBtn("⬇  دانلود خروجی", false) { saveToDownloads(outFile) })
         }
         if (debug.isNotEmpty()) {
-            resultsBox.addView(resBtn("🔍  نمایش دیباگ (${debug.size})", false) { viewer(debug, 0) })
+            resultsBox.addView(resBtn("🔍  نمایش دیباگ (${debug.size})", false) { viewer(debug) })
             resultsBox.addView(resBtn("⬇  دانلود دیباگ (${debug.size})", false) {
                 saveManyToDownloads(debug, "debug")
             })
-        } else if (st.optBoolean("debug_on")) {
-            resultsBox.addView(resBtn("🔍  نمایش دیباگ — تصویری تولید نشد", false) {
-                Toast.makeText(this,
-                    "موتور در این اجرا تصویر دیباگ تولید نکرد — فقط صفحه‌های دارای حباب/متن تصویر دیباگ دارند.",
-                    Toast.LENGTH_LONG).show()
-            })
+        }
+        if (images.isEmpty() && debug.isEmpty() && !hasOutFile) {
+            val tv = TextView(this).apply {
+                text = "برای این اجرا خروجی تصویری ساخته نشد — دلیلش در لاگ بالا آمده."
+                setTextColor(MUT); textSize = 12.5f
+                gravity = Gravity.CENTER
+                setPadding(dp(6), dp(4), dp(6), dp(4))
+            }
+            resultsBox.addView(tv)
         }
         for (i in 0 until resultsBox.childCount) {
             val lp = resultsBox.getChildAt(i).layoutParams as LinearLayout.LayoutParams
@@ -997,12 +1004,20 @@ class MainActivity : AppCompatActivity() {
         autoSaveOutputs(images, outFile)
     }
 
-    /** نمایشگر تمام‌صفحه — هیچ دکمه‌ای ندارد؛ ناوبری با کشیدن انگشت:
-     *  به پایین یا چپ = صفحه بعد، به بالا یا راست = صفحه قبل.
-     *  پینچ = بزرگ/کوچک کردن، دبل‌تپ = زوم ×2.5، تک‌تپ = نمایش/مخفی شماره صفحه. */
-    private fun viewer(paths: List<String>, start: Int) {
-        var idx = start.coerceIn(0, paths.size - 1)
-        val iv = ZoomImageView(this)
+    /** نمایشگر تمام‌صفحهٔ عمودی — همهٔ صفحه‌ها به‌ترتیب از بالا به پایین چیده
+     *  می‌شوند و با کشیدن انگشت به پایین خوانده می‌شوند (بدون دکمهٔ قبلی/بعدی
+     *  و بدون ناوبری چپ/راست — درخواست کاربر).
+     *  دبل‌تپ = زوم ×2.5، پینچ = زوم آزاد (تا ×4)، تک‌تپ = نمایش/مخفی شماره صفحه.
+     *  دیکود در بک‌گراند + کش LRU + درصدهای بزرگ با inSampleSize (بدون OOM). */
+    private fun viewer(paths: List<String>, start: Int = 0) {
+        if (paths.isEmpty()) return
+        val screenW = resources.displayMetrics.widthPixels
+        val bmpCache = object : android.util.LruCache<String, android.graphics.Bitmap>(
+            ((Runtime.getRuntime().maxMemory() / 6L).toInt()).coerceAtLeast(12 * 1024 * 1024)) {
+            override fun sizeOf(key: String, b: android.graphics.Bitmap): Int = b.byteCount
+        }
+        val decoder = java.util.concurrent.Executors.newSingleThreadExecutor()
+
         val pill = TextView(this).apply {
             setTextColor(Color.WHITE); textSize = 13f; typeface = Typeface.DEFAULT_BOLD
             background = rounded(Color.parseColor("#88000000"), 999)
@@ -1013,8 +1028,51 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER
             background = rounded(Color.parseColor("#88000000"), 999)
         }
+        val recycler = androidx.recyclerview.widget.RecyclerView(this)
+        recycler.setBackgroundColor(Color.BLACK)
+        recycler.layoutManager = androidx.recyclerview.widget.LinearLayoutManager(this)
+        recycler.setItemViewCacheSize(4)
+
+        val hideRun = Runnable { pill.visibility = View.GONE; close.visibility = View.GONE }
+        val showChrome: () -> Unit = {
+            pill.visibility = View.VISIBLE; close.visibility = View.VISIBLE
+            ui.removeCallbacks(hideRun); ui.postDelayed(hideRun, 2400)
+        }
+        val toggleChrome: () -> Unit = {
+            if (pill.visibility == View.VISIBLE) {
+                ui.removeCallbacks(hideRun)
+                pill.visibility = View.GONE; close.visibility = View.GONE
+            } else showChrome()
+        }
+
+        val adapter = object : androidx.recyclerview.widget.RecyclerView.Adapter<ReaderHolder>() {
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ReaderHolder =
+                ReaderHolder(this@MainActivity, recycler, screenW, bmpCache, decoder, toggleChrome)
+
+            override fun getItemCount(): Int = paths.size
+
+            override fun onBindViewHolder(holder: ReaderHolder, position: Int) =
+                holder.bind(paths[position])
+
+            override fun onViewRecycled(holder: ReaderHolder) {
+                holder.recycle()
+            }
+        }
+        recycler.adapter = adapter
+        val lm = recycler.layoutManager as androidx.recyclerview.widget.LinearLayoutManager
+        recycler.addOnScrollListener(
+            object : androidx.recyclerview.widget.RecyclerView.OnScrollListener() {
+                override fun onScrolled(rv: androidx.recyclerview.widget.RecyclerView,
+                                        dx: Int, dy: Int) {
+                    val pos = lm.findFirstVisibleItemPosition()
+                    if (pos >= 0 && pos < paths.size) {
+                        pill.text = "صفحه ${pos + 1} از ${paths.size}"
+                    }
+                }
+            })
+
         val root = android.widget.FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        root.addView(iv, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+        root.addView(recycler, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT))
         root.addView(pill, android.widget.FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -1029,198 +1087,158 @@ class MainActivity : AppCompatActivity() {
         dlg.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT)
         close.setOnClickListener { dlg.dismiss() }
-
-        val hideRun = Runnable { pill.visibility = View.GONE; close.visibility = View.GONE }
-        val showChrome = {
-            pill.visibility = View.VISIBLE; close.visibility = View.VISIBLE
-            ui.removeCallbacks(hideRun); ui.postDelayed(hideRun, 2400)
+        dlg.setOnDismissListener {
+            ui.removeCallbacks(hideRun)
+            decoder.shutdownNow()
         }
-        val showPage = {
-            pill.text = "صفحه ${idx + 1} از ${paths.size}"
-            iv.setImagePath(paths[idx])
-            showChrome()
-        }
-        iv.onPageNav = { dir ->
-            idx = (idx + dir + paths.size) % paths.size
-            showPage()
-        }
-        iv.onTap = {
-            if (pill.visibility == View.VISIBLE) {
-                ui.removeCallbacks(hideRun)
-                pill.visibility = View.GONE; close.visibility = View.GONE
-            } else showChrome()
-        }
-        dlg.setOnDismissListener { ui.removeCallbacks(hideRun) }
-        showPage()
+        val s0 = start.coerceIn(0, paths.size - 1)
+        pill.text = "صفحه ${s0 + 1} از ${paths.size}"
+        recycler.post { lm.scrollToPosition(s0) }
         dlg.show()
-        if (!prefs.getBoolean("viewer_hint", false)) {
-            prefs.edit().putBoolean("viewer_hint", true).apply()
+        showChrome()
+        if (!prefs.getBoolean("viewer_hint_v2", false)) {
+            prefs.edit().putBoolean("viewer_hint_v2", true).apply()
             Toast.makeText(this,
-                "برای صفحه بعد انگشت را به پایین یا چپ بکش • دبل‌تپ: زوم", Toast.LENGTH_LONG).show()
+                "صفحه‌ها به‌ترتیب زیر هم چیده شدن • برای زوم دبل‌تپ بزن یا پینچ کن",
+                Toast.LENGTH_LONG).show()
         }
     }
 
-    /** ImageView با زوم پینچ، پن، دبل‌تپ و ناوبری فینگی.
-     *  در مقیاس عادی (کل تصویر در صفحه) هر فینگ جهت‌دار صفحه عوض می‌کند؛
-     *  در حالت زوم فقط فینگ عمودی در لبه پایین/بالای تصویر ناوبری می‌کند.
-     *  دیکود تصویر در بک‌گراند انجام می‌شود (بدون قفل‌شدن UI) + کش کوچک. */
-    private inner class ZoomImageView(ctx: android.content.Context) :
-        androidx.appcompat.widget.AppCompatImageView(ctx) {
+    /** یک ردیف لیست عمودی — HorizontalScrollView (پن افقی در زوم) + PageView.
+     *  زوم به‌صورت «تغییر اندازهٔ خود ویو» انجام می‌شود تا اسکرول عمودی لیست
+     *  همیشه طبیعی بماند (الگوی خوانندهٔ وب‌تون). */
+    private inner class ReaderHolder(
+        ctx: android.content.Context,
+        private val list: androidx.recyclerview.widget.RecyclerView,
+        private val screenW: Int,
+        private val cache: android.util.LruCache<String, android.graphics.Bitmap>,
+        private val decoder: java.util.concurrent.Executor,
+        private val onTap: () -> Unit,
+    ) : androidx.recyclerview.widget.RecyclerView.ViewHolder(
+        android.widget.HorizontalScrollView(ctx).apply {
+            isFillViewport = false
+            isHorizontalScrollBarEnabled = false
+            setBackgroundColor(Color.BLACK)
+        }) {
 
-        private val mat = android.graphics.Matrix()
-        private val vals = FloatArray(9)
-        private var minScale = 1f
-        private var maxScale = 10f
-        var onPageNav: ((Int) -> Unit)? = null
-        var onTap: (() -> Unit)? = null
-
-        private val bmpCache = object : android.util.LruCache<String, android.graphics.Bitmap>(
-            ((Runtime.getRuntime().maxMemory() / 12L).toInt()).coerceAtLeast(8 * 1024 * 1024)) {
-            override fun sizeOf(key: String, b: android.graphics.Bitmap): Int = b.byteCount
-        }
-
-        private val scaleDet = android.view.ScaleGestureDetector(ctx,
-            object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
-                override fun onScale(d: android.view.ScaleGestureDetector): Boolean {
-                    zoom(d.scaleFactor, d.focusX, d.focusY); return true
-                }
-            })
-
-        private val gest = android.view.GestureDetector(ctx,
-            object : android.view.GestureDetector.SimpleOnGestureListener() {
-                override fun onDown(e: android.view.MotionEvent): Boolean = true
-                override fun onScroll(e1: android.view.MotionEvent?,
-                                      e2: android.view.MotionEvent,
-                                      dx: Float, dy: Float): Boolean {
-                    mat.postTranslate(-dx, -dy); apply(); return true
-                }
-                override fun onSingleTapConfirmed(e: android.view.MotionEvent): Boolean {
-                    onTap?.invoke(); return true
-                }
-                override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
-                    if (curScale() > minScale * 1.25f) fit()
-                    else zoom(2.5f, e.x, e.y)
-                    return true
-                }
-                override fun onFling(e1: android.view.MotionEvent?,
-                                     e2: android.view.MotionEvent,
-                                     vx: Float, vy: Float): Boolean {
-                    val cb = onPageNav ?: return false
-                    val avx = Math.abs(vx); val avy = Math.abs(vy)
-                    if (Math.max(avx, avy) < 2000f) return false
-                    val atFit = curScale() <= minScale * 1.08f
-                    if (atFit) {
-                        // کل تصویر در صفحه است — چپ یا پایین = بعدی، راست یا بالا = قبلی
-                        cb(if (vx < 0 || (avy > avx && vy > 0)) 1 else -1)
-                        return true
-                    }
-                    // زوم‌شده — فقط فینگ عمودی تند در لبه پایین/بالا ناوبری می‌کند
-                    if (avy > avx && avy > 2600f) {
-                        if (vy > 0 && atBottomEdge()) { cb(1); return true }
-                        if (vy < 0 && atTopEdge()) { cb(-1); return true }
-                    }
-                    return false
-                }
-            })
+        val page = PageView(ctx)
+        private var ratio = 1.4f   // ارتفاع/عرض تخمینی تا رسیدن بیت‌مپ
+        private var zoom = 1f      // ۱ = به‌اندازهٔ عرض صفحه
 
         init {
-            scaleType = ImageView.ScaleType.MATRIX
+            itemView.layoutParams = androidx.recyclerview.widget.RecyclerView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            (itemView as android.widget.HorizontalScrollView).addView(page)
         }
 
-        fun setImagePath(path: String) {
-            tag = path
-            val cached = bmpCache.get(path)
-            if (cached != null) {
-                setImageBitmap(cached); post { fit() }; return
-            }
-            setImageBitmap(null)
-            Thread {
-                val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(path, o)
-                var sample = 1
-                var m = maxOf(o.outWidth, o.outHeight)
-                while (m > 3000) { sample *= 2; m /= 2 }
-                val bmp = BitmapFactory.decodeFile(path,
-                    BitmapFactory.Options().apply { inSampleSize = sample })
-                if (bmp != null) bmpCache.put(path, bmp)
-                post {
-                    if (tag == path) {
-                        setImageBitmap(bmp)
-                        post { fit() }
+        fun bind(path: String) {
+            page.tag = path
+            page.onTap = { onTap() }
+            val b = cache.get(path)
+            if (b != null) {
+                page.setImageBitmap(b)
+                ratio = b.height.toFloat() / b.width.toFloat()
+                zoom = 1f
+                page.post { applySize() }
+            } else {
+                page.setImageBitmap(null)
+                ratio = 1.4f
+                zoom = 1f
+                page.post { applySize() }
+                decoder.execute {
+                    val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(path, o)
+                    var sample = 1
+                    var m = maxOf(o.outWidth, o.outHeight)
+                    while (m / sample >= 2560) sample *= 2
+                    val bmp = BitmapFactory.decodeFile(path,
+                        BitmapFactory.Options().apply { inSampleSize = sample })
+                    if (bmp != null) cache.put(path, bmp)
+                    page.post {
+                        if (page.tag == path && bmp != null) {
+                            page.setImageBitmap(bmp)
+                            ratio = bmp.height.toFloat() / bmp.width.toFloat()
+                            applySize()
+                        }
                     }
                 }
-            }.start()
-        }
-
-        private fun curScale(): Float {
-            mat.getValues(vals)
-            return vals[android.graphics.Matrix.MSCALE_X]
-        }
-
-        private fun zoom(f: Float, fx: Float, fy: Float) {
-            mat.postScale(f, f, fx, fy); apply()
-        }
-
-        private fun fit() {
-            val d = drawable ?: return
-            if (width == 0 || height == 0) return
-            val iw = d.intrinsicWidth.toFloat()
-            val ih = d.intrinsicHeight.toFloat()
-            if (iw <= 0f || ih <= 0f) return
-            val s = minOf(width / iw, height / ih)
-            minScale = s; maxScale = s * 10f
-            mat.setScale(s, s)
-            mat.postTranslate((width - iw * s) / 2f, (height - ih * s) / 2f)
-            apply()
-        }
-
-        private fun atBottomEdge(): Boolean {
-            val d = drawable ?: return true
-            mat.getValues(vals)
-            val ih = d.intrinsicHeight * vals[android.graphics.Matrix.MSCALE_X]
-            if (ih <= height) return true
-            return vals[android.graphics.Matrix.MTRANS_Y] >= height - ih - dp(2)
-        }
-
-        private fun atTopEdge(): Boolean {
-            val d = drawable ?: return true
-            mat.getValues(vals)
-            val ih = d.intrinsicHeight * vals[android.graphics.Matrix.MSCALE_X]
-            if (ih <= height) return true
-            return vals[android.graphics.Matrix.MTRANS_Y] <= dp(2)
-        }
-
-        private fun apply() {
-            val d = drawable ?: return
-            mat.getValues(vals)
-            val s0 = vals[android.graphics.Matrix.MSCALE_X]
-            val s = s0.coerceIn(minScale, maxScale)
-            if (s != s0) {
-                mat.postScale(s / s0, s / s0,
-                    vals[android.graphics.Matrix.MTRANS_X],
-                    vals[android.graphics.Matrix.MTRANS_Y])
-                mat.getValues(vals)
             }
-            val iw = d.intrinsicWidth * s
-            val ih = d.intrinsicHeight * s
-            var tx = vals[android.graphics.Matrix.MTRANS_X]
-            var ty = vals[android.graphics.Matrix.MTRANS_Y]
-            tx = if (iw <= width) (width - iw) / 2f
-                 else tx.coerceIn(width - iw, 0f)
-            ty = if (ih <= height) (height - ih) / 2f
-                 else ty.coerceIn(height - ih, 0f)
-            val dx = tx - vals[android.graphics.Matrix.MTRANS_X]
-            val dy = ty - vals[android.graphics.Matrix.MTRANS_Y]
-            if (dx != 0f || dy != 0f) mat.postTranslate(dx, dy)
-            imageMatrix = mat
-            invalidate()
         }
 
-        override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
-            scaleDet.onTouchEvent(e)
-            if (!scaleDet.isInProgress) gest.onTouchEvent(e)
-            parent?.requestDisallowInterceptTouchEvent(true)
-            return true
+        fun recycle() {
+            page.tag = null
+            page.setImageBitmap(null)
+        }
+
+        private fun applySize() {
+            val w = (screenW * zoom).toInt().coerceAtLeast(1)
+            val h = (w * ratio).toInt().coerceAtLeast(1)
+            page.layoutParams = ViewGroup.LayoutParams(w, h)
+        }
+
+        /** ImageView صفحه — همهٔ لمس‌ها را می‌گیرد و خودش توزیع می‌کند:
+         *  اسکرول عمودی → لیست، پن افقی در زوم → HorizontalScrollView،
+         *  پینچ/دبل‌تپ → تغییر zoom (اندازهٔ ویو). */
+        inner class PageView(ctx: android.content.Context) :
+            androidx.appcompat.widget.AppCompatImageView(ctx) {
+
+            var onTap: (() -> Unit)? = null
+
+            private val scaleDet = android.view.ScaleGestureDetector(ctx,
+                object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                    override fun onScale(d: android.view.ScaleGestureDetector): Boolean {
+                        zoom = (zoom * d.scaleFactor).coerceIn(1f, 4f)
+                        applySize()
+                        return true
+                    }
+                })
+
+            private val gest = android.view.GestureDetector(ctx,
+                object : android.view.GestureDetector.SimpleOnGestureListener() {
+                    override fun onDown(e: android.view.MotionEvent): Boolean = true
+
+                    override fun onScroll(e1: android.view.MotionEvent?,
+                                          e2: android.view.MotionEvent,
+                                          dx: Float, dy: Float): Boolean {
+                        // افقی: فقط وقتی زوم‌شده محدودهٔ پن وجود دارد
+                        (itemView as android.widget.HorizontalScrollView)
+                            .scrollBy((-dx).toInt(), 0)
+                        // عمودی: همیشه لیست جلو می‌رود (خواندن از بالا به پایین)
+                        list.scrollBy(0, dy.toInt())
+                        return true
+                    }
+
+                    override fun onSingleTapConfirmed(e: android.view.MotionEvent): Boolean {
+                        onTap?.invoke(); return true
+                    }
+
+                    override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
+                        zoom = if (zoom > 1.2f) 1f else 2.5f
+                        applySize()
+                        return true
+                    }
+
+                    override fun onFling(e1: android.view.MotionEvent?,
+                                         e2: android.view.MotionEvent,
+                                         vx: Float, vy: Float): Boolean {
+                        list.fling(0, vy.toInt())
+                        return true
+                    }
+                })
+
+            init {
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                adjustViewBounds = false
+            }
+
+            override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+                scaleDet.onTouchEvent(e)
+                if (!scaleDet.isInProgress) gest.onTouchEvent(e)
+                if (scaleDet.isInProgress) {
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                }
+                return true
+            }
         }
     }
 

@@ -166,9 +166,12 @@ def _jset_to_list(js):
 
 
 class NodeArg:
-    def __init__(self, name, shape, dtype="tensor(float)"):
+    def __init__(self, name, shape=None, dtype="tensor(float)"):
+        # ⚠ shape باید اختیاری باشد — باگ واقعی دستگاه (v1.18):
+        # «NodeArg.__init__() missing 1 required positional argument: 'shape'»
+        # چون get_outputs فقط name می‌داد. حالا اگر shape نیاید [] می‌گیریم.
         self.name = name
-        self.shape = shape
+        self.shape = list(shape) if shape else []
         self.type = dtype
 
     def __repr__(self):
@@ -293,6 +296,44 @@ class _ModelMeta:
             pass
 
 
+_JTYPE2ORT = {
+    "FLOAT": "tensor(float)", "DOUBLE": "tensor(double)",
+    "INT8": "tensor(int8)", "INT16": "tensor(int16)",
+    "INT32": "tensor(int32)", "INT64": "tensor(int64)",
+    "UINT8": "tensor(uint8)", "BOOL": "tensor(bool)",
+    "STRING": "tensor(string)", "BFLOAT16": "tensor(bfloat16)",
+}
+
+
+def _node_info(info):
+    """(shape, dtype) از NodeInfo جاوا — چند استراتژی محافظت‌شده.
+
+    API جاوا: NodeInfo.getInfo() → TensorInfo؛ TensorInfo.getShape() → long[]
+    و TensorInfo.getType() → OnnxJavaType. بعضی نسخه‌ها getShape را روی خود
+    NodeInfo هم دارند — هر دو مسیر امتحان می‌شود.
+    """
+    shape, dtype = [], "tensor(float)"
+    js = None
+    try:
+        js = info.getShape()
+    except Exception:
+        pass
+    if js is None:
+        try:
+            js = info.getInfo().getShape()
+        except Exception:
+            pass
+    try:
+        shape = [int(s) if s is not None else -1 for s in list(js)]
+    except Exception:
+        pass
+    try:
+        dtype = _JTYPE2ORT.get(str(info.getInfo().getType()), "tensor(float)")
+    except Exception:
+        pass
+    return shape, dtype
+
+
 class InferenceSession:
     def __init__(self, path_or_bytes, sess_options=None, providers=None, **kw):
         if not _OK:
@@ -316,24 +357,44 @@ class InferenceSession:
         self._out_names = _jset_to_list(self._sess.getOutputNames())
 
     def get_inputs(self):
-        infos = self._sess.getInputInfo()
+        infos = None
+        try:
+            infos = self._sess.getInputInfo()
+        except Exception:
+            pass
         out = []
         for name in self._in_names:
-            shape = []
-            try:
-                info = infos.get(name)
+            shape, dtype = [], "tensor(float)"
+            if infos is not None:
+                try:
+                    info = infos.get(name)
+                except Exception:
+                    info = None
                 if info is not None:
-                    js = info.getShape()
-                    if js is not None:
-                        shape = [int(s) if s is not None else -1
-                                 for s in list(js.getShape())]
-            except Exception:
-                pass
-            out.append(NodeArg(name, shape))
+                    shape, dtype = _node_info(info)
+            out.append(NodeArg(name, shape, dtype))
         return out
 
     def get_outputs(self):
-        return [NodeArg(n) for n in self._out_names]
+        # ⚠ باگ دستگاه v1.18: «[NodeArg(n) for n in self._out_names]» بدون shape
+        # بود → rapidocr در get_output_names کرش می‌کرد → فاز ۱ صفر خروجی می‌داد.
+        infos = None
+        try:
+            infos = self._sess.getOutputInfo()
+        except Exception:
+            pass
+        out = []
+        for name in self._out_names:
+            shape, dtype = [], "tensor(float)"
+            if infos is not None:
+                try:
+                    info = infos.get(name)
+                except Exception:
+                    info = None
+                if info is not None:
+                    shape, dtype = _node_info(info)
+            out.append(NodeArg(name, shape, dtype))
+        return out
 
     def get_modelmeta(self):
         return _ModelMeta(self._sess)

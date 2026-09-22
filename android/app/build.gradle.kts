@@ -15,8 +15,8 @@ android {
         // android_24 ساخته شده (android_21 فقط cp38 دارد) → پایین‌تر از این ممکن نیست
         minSdk = 24
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.18"
+        versionCode = 6
+        versionName = "1.19"
 
         // معماری‌ها از بیرون قابل انتخاب: -PappAbis=arm64-v8a (سبک) یا همه برای universal
         // پکیج‌های پایتونی هر معماری ~۱۵-۲۰MB است → تک‌ABI، حجم APK را نصف می‌کند
@@ -99,5 +99,6 @@ dependencies {
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("com.google.android.material:material:1.12.0")
 }
