@@ -9,10 +9,12 @@
 بدون HTTP — Kotlin مستقیم این توابع را صدا می‌زند.
 """
 import contextlib
-import io
 import json
+import logging
 import os
+import re
 import threading
+import time
 import traceback
 
 import manga
@@ -427,6 +429,137 @@ def _log(job, msg):
         job["log"] = (txt + "\n" + str(msg))[-12000:]
 
 
+# ---------- استریم زندهٔ خروجی موتور ----------
+# قبلاً همهٔ خروجی موتور (استخراج، فاز ۱، دانلود مدل‌ها و…) در یک StringIO
+# جمع می‌شد و فقط «در پایان کار» به لاگ می‌رفت → کاربر تمام مدت اجرا فقط
+# پیام‌های فونت را می‌دید و فکر می‌کرد هیچ اتفاقی نمی‌افتد (گزارش واقعی:
+# «فقط فونت پیش‌نیازها نصب میشن استخراج خبری نیست»). حالا هر خط به‌محض
+# تولید در لاگ می‌رود.
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+class _TeeStream:
+    """استریم زنده + نگه‌داشتن tail برای flush پایانی.
+
+    خط‌شکنی روی \n و \r؛ تیک‌های progress (مثل «45%|███») به‌جای اضافه‌شدن،
+    خط قبلی خودشان را جایگزین می‌کنند تا لاگ شلوغ نشود؛ خط‌های خیلی بلند
+    کوتاه می‌شوند؛ کدهای رنگ ANSI حذف می‌شوند (TextView رنگ نمی‌فهمد).
+    """
+
+    def __init__(self, job):
+        self._job = job
+        self._lock = threading.Lock()
+        self._parts = []   # تکه‌های خط ناتمام
+        self._len = 0
+        self._tail = []    # برای flush پایانی
+
+    def write(self, s):
+        if not s:
+            return 0
+        with self._lock:
+            self._tail.append(s)
+            if len(self._tail) > 800:
+                del self._tail[:-400]
+            self._parts.append(s)
+            self._len += len(s)
+            big = self._len >= 256
+        if big or "\n" in s or "\r" in s:
+            self.flush()
+        return len(s)
+
+    def flush(self):
+        with self._lock:
+            chunk = "".join(self._parts)
+            self._parts = []
+            self._len = 0
+        if not chunk:
+            return
+        pieces = chunk.replace("\r", "\n").split("\n")
+        for ln in pieces[:-1]:
+            self._emit(ln)
+        if pieces[-1]:
+            with self._lock:
+                self._parts.append(pieces[-1])
+                self._len = len(pieces[-1])
+
+    def _emit(self, ln):
+        ln = _ANSI.sub("", ln).rstrip()
+        if not ln:
+            return
+        if len(ln) > 300:
+            ln = "…" + ln[-300:]
+        with STATE["lock"]:
+            txt = str(self._job.get("log") or "")
+            lines = txt.split("\n") if txt else []
+            prev = lines[-1] if lines else ""
+            if "%|" in ln and "%|" in prev:
+                lines[-1] = ln  # تیک progress → جایگزین خط قبلی
+            else:
+                lines.append(ln)
+            self._job["log"] = ("\n".join(lines))[-12000:]
+
+    def getvalue(self):
+        self.flush()
+        with self._lock:
+            return "".join(self._tail)
+
+
+def _heartbeat(job):
+    """اگر ۳۰ ثانیه هیچ خروجی جدیدی نیاید، نشانهٔ زنده‌بودن موتور بنویسد —
+    «هیچی معلوم نیست» دیگر نباید رخ دهد (کاربر بفهمد اپ کار می‌کند)."""
+    t0 = time.time()
+    last = -1
+    while True:
+        time.sleep(30)
+        with STATE["lock"]:
+            if job.get("done"):
+                return
+            cur = len(str(job.get("log") or ""))
+        if cur == last:
+            _log(job, "⏳ موتور در حال کار است… %d ثانیه از شروع — صفحه‌های سنگین/دانلود مدل طول می‌کشد" % int(time.time() - t0))
+        last = cur
+
+
+def _attach_log_handlers(tee):
+    """لاگ‌های logging (RapidOCR با colorlog و propagate=False) را هم به
+    استریم زنده وصل می‌کند — وگرنه فقط در logcat دیده می‌شوند، نه در اپ."""
+
+    class _H(logging.Handler):
+        def emit(self, record):
+            try:
+                tee.write(self.format(record) + "\n")
+            except Exception:
+                pass
+
+    h = _H(level=logging.INFO)
+    h.setFormatter(logging.Formatter("[%(name)s] %(message)s"))
+    targets = [logging.getLogger()]
+    rapid = logging.getLogger("RapidOCR")
+    if rapid not in targets:
+        targets.append(rapid)
+    attached = []
+    for lg in targets:
+        try:
+            # اگر سطح مؤثر لاگر بالاتر از INFO باشد (پیش‌فرض root: WARNING)
+            # رکوردها قبل از رسیدن به هندلر حذف می‌شوند → INFO کنیم
+            if lg.getEffectiveLevel() > logging.INFO:
+                lg.setLevel(logging.INFO)
+            lg.addHandler(h)
+            attached.append(lg)
+        except Exception:
+            pass
+    return (h, attached)
+
+
+def _detach_log_handlers(attached):
+    try:
+        h, lgs = attached
+        for lg in lgs:
+            lg.removeHandler(h)
+    except Exception:
+        pass
+
+
 def _run(job):
     p = job["params"]
     try:
@@ -477,51 +610,58 @@ def _run(job):
             except Exception:
                 return dflt
 
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-            mf = _MF_CACHE["mf"]
-            if mf is None:
-                try:
-                    mf = json.loads(manifest())
-                except Exception:
-                    mf = {}
-            font_by_style, active = _resolve_tones(job, mf)
-            tr = manga.MangaTranslator(
-                api_key=keys or ["placeholder"],
-                provider=str(p.get("provider") or "gemini"),
-                model_name=(str(p.get("model")) or None) if p.get("model") else None,
-                ocr_langs=langs,
-                font_path=fp,
-                reading_order=str(p.get("readord") or "rtl"),
-                gpu=False if p.get("force_cpu") else None,
-                two_pass_ocr=bool(p.get("two_pass", True)),
-                debug=bool(p.get("debug")),
-                glossary_path=glossary_path,
-                story_brief=bool(p.get("story_brief", True)),
-                fake_translate=bool(p.get("fake")),
-                clean_only=bool(p.get("clean_only")),
-                max_workers=_i("workers", 2),
-                bubbles_per_request=_i("bubbles", 6),
-                api_timeout=_f("timeout", 40.0),
-                max_retries=_i("maxre", 8),
-                request_delay=_f("reqdelay", 0.0),
-                translation_temperature=_f("temp", 0.85),
-                img_quality=_i("quality", 92),
-                img_format=_resolve_img_format(p),
-                style_fonts=bool(active),
-                active_tones=active or None,
-                instruction_text=(str(p["instruction"]).strip() or None)
-                if p.get("instruction") else None,
-            )
-            tr.batch_workers = _i("batchw", 3)  # مثل CLI: بعد از ساخت
-            if font_by_style:
-                tr.font_by_style = font_by_style
-                tr.style_fonts = True
-                _log(job, "🎨 لحن‌های فعال: %s" % "، ".join(active))
-            tr.run(str(p.get("src")), job["out_file_path"], resume=False)
-        txt = buf.getvalue()
-        if txt:
-            _log(job, txt[-8000:])
+        # 📡 استریم زندهٔ خروجی موتور (استخراج، فازها، دانلود مدل‌ها…)
+        tee = _TeeStream(job)
+        hb = threading.Thread(target=_heartbeat, args=(job,), daemon=True)
+        hb.start()
+        handlers = _attach_log_handlers(tee)
+        try:
+            with contextlib.redirect_stdout(tee), contextlib.redirect_stderr(tee):
+                _log(job, "🚀 در حال بارگذاری موتور و مدل‌ها…"
+                          " (بار اول دانلود مدل چند دقیقه طول می‌کشد)")
+                mf = _MF_CACHE["mf"]
+                if mf is None:
+                    try:
+                        mf = json.loads(manifest())
+                    except Exception:
+                        mf = {}
+                font_by_style, active = _resolve_tones(job, mf)
+                tr = manga.MangaTranslator(
+                    api_key=keys or ["placeholder"],
+                    provider=str(p.get("provider") or "gemini"),
+                    model_name=(str(p.get("model")) or None) if p.get("model") else None,
+                    ocr_langs=langs,
+                    font_path=fp,
+                    reading_order=str(p.get("readord") or "rtl"),
+                    gpu=False if p.get("force_cpu") else None,
+                    two_pass_ocr=bool(p.get("two_pass", True)),
+                    debug=bool(p.get("debug")),
+                    glossary_path=glossary_path,
+                    story_brief=bool(p.get("story_brief", True)),
+                    fake_translate=bool(p.get("fake")),
+                    clean_only=bool(p.get("clean_only")),
+                    max_workers=_i("workers", 2),
+                    bubbles_per_request=_i("bubbles", 6),
+                    api_timeout=_f("timeout", 40.0),
+                    max_retries=_i("maxre", 8),
+                    request_delay=_f("reqdelay", 0.0),
+                    translation_temperature=_f("temp", 0.85),
+                    img_quality=_i("quality", 92),
+                    img_format=_resolve_img_format(p),
+                    style_fonts=bool(active),
+                    active_tones=active or None,
+                    instruction_text=(str(p["instruction"]).strip() or None)
+                    if p.get("instruction") else None,
+                )
+                tr.batch_workers = _i("batchw", 3)  # مثل CLI: بعد از ساخت
+                if font_by_style:
+                    tr.font_by_style = font_by_style
+                    tr.style_fonts = True
+                    _log(job, "🎨 لحن‌های فعال: %s" % "، ".join(active))
+                _log(job, "🎬 موتور شروع شد — استخراج صفحات و فازها از این‌جا در لاگ می‌آید")
+                tr.run(str(p.get("src")), job["out_file_path"], resume=False)
+        finally:
+            _detach_log_handlers(handlers)
 
         # خروجی‌ها: فایل نهایی + صفحات (از cache خروجی برای نمایش)
         imgs, dbg = [], []
@@ -550,12 +690,13 @@ def _run(job):
         if bool(p.get("debug")) and not dbg:
             _log(job, "🔍 دیباگ روشن بود ولی تصویر دیباگی ساخته نشد — "
                       "تصویر دیباگ فقط برای صفحه‌هایی که متن/حباب دارند تولید می‌شود.")
-    except Exception:
-        # خروجی موتور تا لحظه خطا — ارور واقعی مخفی‌شده را نشان می‌دهد
+    except BaseException:
+        # خروجی موتور تا لحظهٔ خطا — ارور واقعی مخفی‌شده را نشان می‌دهد
+        # (BaseException: حتی sys.exit در اعماق کد هم بی‌صدا نمرود)
         try:
-            _txt = buf.getvalue()
+            _txt = tee.getvalue()
             if _txt.strip():
-                _log(job, _txt[-4000:])
+                _log(job, "…" + _txt[-4000:])
         except Exception:
             pass
         _log(job, "❌ خطا:\n" + traceback.format_exc()[-2500:])
