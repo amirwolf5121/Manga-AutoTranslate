@@ -64,7 +64,6 @@ jobs:
 
       - name: Publish engine files (mirror آپدیت درون‌اپ — raw در ایران بلاک است)
         run: |
-          cp manga.py manga_app.py .
           cp android/app/src/main/python/bridge.py .
           cp android/app/src/main/python/extract_ui.py .
           gh release view files -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||             gh release create files -R "$GITHUB_REPOSITORY"               --title "Engine files (in-app update mirror)"               --notes "manga.py / manga_app.py / bridge.py / extract_ui.py برای آپدیت خودکار اپ"
