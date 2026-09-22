@@ -15,8 +15,8 @@ android {
         // android_24 ساخته شده (android_21 فقط cp38 دارد) → پایین‌تر از این ممکن نیست
         minSdk = 24
         targetSdk = 34
-        versionCode = 11
-        versionName = "1.24"
+        versionCode = 12
+        versionName = "1.25"
 
         // معماری‌ها از بیرون قابل انتخاب: -PappAbis=arm64-v8a (سبک) یا همه برای universal
         // پکیج‌های پایتونی هر معماری ~۱۵-۲۰MB است → تک‌ABI، حجم APK را نصف می‌کند

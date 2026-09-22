@@ -1732,8 +1732,14 @@ class MangaTranslator:
     # شرط «۲GB رم آزاد» (که وسط کار اپ معمولاً برقرار نیست) رد می‌شد.
     # رم آزاد فقط «هشدار» است؛ اگر واقعاً OOM شود فال‌بک لاما→OpenCV خودکار هست.
     _ANDROID_LAMA_MIN_TOTAL_GB = 4.0
-    _ANDROID_LAMA_MIN_AVAIL_GB = 1.0  # فقط زیر این واقعاً این‌بار رد می‌شود
-    _ANDROID_LAMA_WARN_AVAIL_GB = 1.5  # بالای این ولی کم → هشدار، اجرا می‌شود
+    # v1.25 — گزارش کاربر (Poco F4/SD870/۶GB): تیک اجبار → «۰.۵GB رم کمه» و رد.
+    # MemAvailable اندروید لحظه‌ای است؛ وسط کار حتی روی گوشی سالم می‌تواند
+    # ۰.۵GB شود (کش/zram). کفِ مطلق فقط ۰.۴GB است؛ بین ۰.۴ تا ۱.۲ = هشدار ولی
+    # اجرا؛ و اگر CPU قوی باشد (≥۶ هسته، مثل SD870 با ۸ هسته) زیر کف هم فقط
+    # با هشدار تلاش می‌شود نه رد قطعی.
+    _ANDROID_LAMA_MIN_AVAIL_GB = 0.4
+    _ANDROID_LAMA_WARN_AVAIL_GB = 1.2
+    _ANDROID_LAMA_STRONG_CPU_CORES = 6  # پرچم‌دار = ۸ هسته؛ بودجه‌ای = ۴ هسته
 
     @staticmethod
     def _detect_paddle_gpu() -> bool:
@@ -1814,6 +1820,23 @@ class MangaTranslator:
         if not has_ort:
             print("[*] onnxruntime نیست → OpenCV inpaint.")
             return False
+
+        # 🩹 v1.25 — تشخیص خودکار روی اندروید: تا این‌جا «خالی = خودکار» روی
+        # گوشی هرگز LaMa را روشن نمی‌کرد (has_cuda همیشه False است و مسیر به
+        # «GPU نیست → OpenCV» می‌افتاد) → کاربر مجبور بود هر بار تیک «اجبار»
+        # بزند (گزارش کاربر). حالا: رم کل ≥ ۴GB → خودکار LaMa؛ گیت لحظهٔ
+        # بارگذاری در _get_lama همچنان نگهبان است (رم آزاد خیلی کم → هشدار
+        # یا OpenCV). --cpu (force_gpu=False) همچنان بر خودکاری مقدم است.
+        if _on_android() and force_gpu is None:
+            total = self._total_ram_gb()
+            if total and total < self._ANDROID_LAMA_MIN_TOTAL_GB:
+                print(f"[*] خودکار اندروید: رم کل گوشی {total:.1f}GB "
+                      f"(< {self._ANDROID_LAMA_MIN_TOTAL_GB:.0f}GB) → OpenCV سریع.")
+                return False
+            print(f"[*] خودکار اندروید: رم کل {total:.1f}GB → LaMa فعال "
+                  f"(اگر لحظهٔ بارگذاری رمِ آزاد خیلی کم باشد، همان‌جا هشدار "
+                  f"می‌دهد یا به OpenCV برمی‌گردد).")
+            return True
 
         if force_gpu is True:
             print(f"[*] --gpu → LaMa ONNX فعال ({name or 'CUDA'}, {vram:.1f} GB).")
@@ -2187,6 +2210,13 @@ class MangaTranslator:
             if _on_android():
                 total = self._total_ram_gb()
                 avail = self._available_ram_gb()
+                cores = self._cpu_core_count()
+                strong_cpu = cores >= self._ANDROID_LAMA_STRONG_CPU_CORES
+                try:
+                    import gc as _gc
+                    _gc.collect()  # قبل از مدل سنگین، زبالهٔ پایتون آزاد شود
+                except Exception:
+                    pass
                 if total and total < self._ANDROID_LAMA_MIN_TOTAL_GB:
                     print(f"[!] LaMa فعال نشد: رم کل گوشی {total:.1f}GB است "
                           f"(حداقل {self._ANDROID_LAMA_MIN_TOTAL_GB:.0f}GB لازم است) "
@@ -2195,16 +2225,26 @@ class MangaTranslator:
                     self._inpainter_name = "OpenCV"
                     return None
                 if avail and avail < self._ANDROID_LAMA_MIN_AVAIL_GB:
-                    print(f"[!] الان رم آزاد گوشی خیلی کم است ({avail:.1f}GB) — LaMa این بار "
-                          f"اجرا نشد → OpenCV. اپ‌های بیکار را ببند و دوباره امتحان کن.")
-                    self.use_lama = False
-                    self._inpainter_name = "OpenCV"
-                    return None
-                print(f"[*] رم گوشی: کل {total:.1f}GB / آزاد {avail:.1f}GB → "
-                      f"LaMa-Manga روی CPU اجرا می‌شود (کندتر ولی تمیزتر از OpenCV).")
-                if avail and avail < self._ANDROID_LAMA_WARN_AVAIL_GB:
-                    print(f"    [!] رم آزاد کمی پایین است؛ اگر وسط کار کرش شد، "
-                          f"اپ‌های بیکار را ببند یا چند لحظه بعد امتحان کن.")
+                    if strong_cpu:
+                        # v1.25 — گوشی قوی (مثل SD870/۸ هسته): «رم آزادِ» لحظه‌ای
+                        # پایین دلیل ضعف دستگاه نیست (کش/zram جا باز می‌کند) →
+                        # فقط هشدار، اجرا (گزارش «۰.۵ رم کمه» روی ۶GB).
+                        print(f"[!] رم آزاد لحظه‌ای خیلی کم است ({avail:.1f}GB) ولی CPU "
+                              f"گوشی قوی است ({cores} هسته) → با این حال تلاش می‌کنیم؛ "
+                              f"اندروید با کش/zram جا باز می‌کند. اگر باز کرش شد، "
+                              f"اپ‌های بیکار را ببند و دوباره امتحان کن.")
+                    else:
+                        print(f"[!] الان رم آزاد گوشی خیلی کم است ({avail:.1f}GB) — LaMa این بار "
+                              f"اجرا نشد → OpenCV. اپ‌های بیکار را ببند و دوباره امتحان کن.")
+                        self.use_lama = False
+                        self._inpainter_name = "OpenCV"
+                        return None
+                elif avail and avail < self._ANDROID_LAMA_WARN_AVAIL_GB:
+                    print(f"    [!] رم آزاد کمی پایین است ({avail:.1f}GB)؛ اگر وسط کار "
+                          f"کرش شد، اپ‌های بیکار را ببند یا چند لحظه بعد امتحان کن.")
+                print(f"[*] رم گوشی: کل {total:.1f}GB / آزاد {avail:.1f}GB / "
+                      f"{cores} هستهٔ CPU → LaMa-Manga روی CPU اجرا می‌شود "
+                      f"(کندتر ولی تمیزتر از OpenCV).")
             try:
                 print("    [*] بارگذاری LaMa-Manga ONNX (fine-tune مانگا) ...")
                 self._lama = LamaMangaONNX(
@@ -2226,6 +2266,23 @@ class MangaTranslator:
                     self._lama = None
                     self._inpainter_name = "OpenCV"
         return self._lama
+
+    @staticmethod
+    def _cpu_core_count() -> int:
+        """تعداد هسته‌های منطقی CPU — ملاک «قوی بودن» گوشی برای LaMa (v1.25).
+        پرچم‌دارها (SD870/888/Gen1) ۸ هسته‌اند؛ گوشی‌های بودجه‌ای ۴ هسته."""
+        try:
+            n = os.cpu_count()
+            if n:
+                return int(n)
+        except Exception:
+            pass
+        try:
+            with open("/proc/cpuinfo", encoding="ascii") as f:
+                return sum(1 for ln in f if ln.startswith("processor"))
+        except Exception:
+            pass
+        return 4
 
     def _mask_key(self, key: str) -> str:
         if not key:

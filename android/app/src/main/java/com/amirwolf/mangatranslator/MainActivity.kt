@@ -1054,79 +1054,77 @@ class MainActivity : AppCompatActivity() {
         autoSaveOutputs(images, outFile)
     }
 
-    /** نمایشگر تمام‌صفحهٔ عمودی — همهٔ صفحه‌ها به‌ترتیب از بالا به پایین چیده
-     *  می‌شوند و با کشیدن انگشت به پایین خوانده می‌شوند (بدون دکمهٔ قبلی/بعدی
-     *  و بدون ناوبری چپ/راست — درخواست کاربر).
-     *  دبل‌تپ = زوم ×2.5، پینچ = زوم آزاد (تا ×4)، تک‌تپ = نمایش/مخفی شماره صفحه.
-     *  دیکود در بک‌گراند + کش LRU + درصدهای بزرگ با inSampleSize (بدون OOM). */
-    private fun viewer(paths: List<String>, start: Int = 0) {
+    /** نمایشگر تمام‌صفحه — از v1.25 عینِ «خوانندهٔ وب» (manga_app.py):
+     *  همان HTML/CSS/JS (asset: reader.html — تولیدشده عیناً از
+     *  build_reader_html وب با scripts/gen_reader_asset.py) داخل WebView اجرا
+     *  می‌شود؛ یعنی زوم پایدار روی همهٔ صفحه‌ها (۵۰٪ تا ۴۰۰٪)، پینچ لنگردار روی
+     *  نقطهٔ لمس، دبل‌تپ، دکمه‌های −/+/پهنا/فول‌اسکرین با نمایش درصد و نوار
+     *  پیشرفت خواندن — دقیقاً همان تجربهٔ نسخهٔ وب (درخواست کاربر).
+     *  عکس‌ها با URL نسبی i/<N> سرو می‌شوند؛ shouldInterceptRequest همان فایل
+     *  را از دیسک می‌خواند — بدون file:// و بدون دغدغهٔ ساسپندیژن اندروید.
+     *  محدودیت قبلی حذف شد: زوم هر صفحه از صفحهٔ بعد پاک می‌شد، زیر ۱۰۰٪
+     *  نمی‌رفت و درصد/پیشرفت نداشت — چون WebView رفتار وب را عیناً می‌آورد. */
+    private fun viewer(paths: List<String>) {
         if (paths.isEmpty()) return
-        val screenW = resources.displayMetrics.widthPixels
-        val bmpCache = object : android.util.LruCache<String, android.graphics.Bitmap>(
-            ((Runtime.getRuntime().maxMemory() / 6L).toInt()).coerceAtLeast(12 * 1024 * 1024)) {
-            override fun sizeOf(key: String, b: android.graphics.Bitmap): Int = b.byteCount
-        }
-        val decoder = java.util.concurrent.Executors.newSingleThreadExecutor()
 
-        val pill = TextView(this).apply {
-            setTextColor(Color.WHITE); textSize = 13f; typeface = Typeface.DEFAULT_BOLD
-            background = rounded(Color.parseColor("#88000000"), 999)
-            setPadding(dp(14), dp(6), dp(14), dp(6))
+        val imgRx = Regex("/i/(\\d+)/?$")
+        val mimeMap = mapOf(
+            "png" to "image/png", "jpg" to "image/jpeg", "jpeg" to "image/jpeg",
+            "webp" to "image/webp", "bmp" to "image/bmp", "gif" to "image/gif")
+
+        val wv = android.webkit.WebView(this)
+        wv.setBackgroundColor(Color.BLACK)
+        wv.settings.javaScriptEnabled = true
+        wv.settings.domStorageEnabled = true
+        wv.settings.useWideViewPort = true     // بدون این <meta viewport> نادیده می‌ماند
+        wv.settings.loadWithOverviewMode = true
+        wv.settings.builtInZoomControls = false // زوم بومی خاموش — زوم از JS خوانندهٔ وب
+        wv.settings.displayZoomControls = false
+        wv.settings.allowFileAccess = false
+        wv.settings.mediaPlaybackRequiresUserGesture = true
+
+        val title = try {
+            File(paths[0]).parentFile?.name?.takeIf { it.isNotBlank() } ?: "مانهوا"
+        } catch (_: Exception) { "مانهوا" }
+
+        val assetHtml = try {
+            assets.open("reader.html").bufferedReader().use { it.readText() }
+        } catch (_: Exception) { "" }
+        if (assetHtml.isBlank()) {
+            Toast.makeText(this, "خواننده در دسترس نیست", Toast.LENGTH_LONG).show()
+            return
         }
+        val imgs = paths.indices.joinToString("") {
+            "<img src=\"i/$it\" loading=\"lazy\" decoding=\"async\" alt=\"\" draggable=\"false\">"
+        }
+        val html = assetHtml.replace("__TITLE__", title).replace("__IMGS__", imgs)
+
+        wv.webViewClient = object : android.webkit.WebViewClient() {
+            override fun shouldInterceptRequest(
+                view: android.webkit.WebView,
+                request: android.webkit.WebResourceRequest,
+            ): android.webkit.WebResourceResponse? {
+                val m = imgRx.find(request.url.toString()) ?: return null
+                val idx = m.groupValues[1].toIntOrNull() ?: return null
+                if (idx < 0 || idx >= paths.size) return null
+                val f = File(paths[idx])
+                if (!f.isFile) return null
+                return try {
+                    android.webkit.WebResourceResponse(
+                        mimeMap[f.extension.lowercase()] ?: "image/png", null,
+                        f.inputStream())
+                } catch (_: Exception) { null }
+            }
+        }
+
         val close = TextView(this).apply {
             text = "✕"; setTextColor(Color.WHITE); textSize = 15f
             gravity = Gravity.CENTER
             background = rounded(Color.parseColor("#88000000"), 999)
         }
-        val recycler = androidx.recyclerview.widget.RecyclerView(this)
-        recycler.setBackgroundColor(Color.BLACK)
-        recycler.layoutManager = androidx.recyclerview.widget.LinearLayoutManager(this)
-        recycler.setItemViewCacheSize(4)
-
-        val hideRun = Runnable { pill.visibility = View.GONE; close.visibility = View.GONE }
-        val showChrome: () -> Unit = {
-            pill.visibility = View.VISIBLE; close.visibility = View.VISIBLE
-            ui.removeCallbacks(hideRun); ui.postDelayed(hideRun, 2400)
-        }
-        val toggleChrome: () -> Unit = {
-            if (pill.visibility == View.VISIBLE) {
-                ui.removeCallbacks(hideRun)
-                pill.visibility = View.GONE; close.visibility = View.GONE
-            } else showChrome()
-        }
-
-        val adapter = object : androidx.recyclerview.widget.RecyclerView.Adapter<ReaderHolder>() {
-            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ReaderHolder =
-                ReaderHolder(this@MainActivity, recycler, screenW, bmpCache, decoder, toggleChrome)
-
-            override fun getItemCount(): Int = paths.size
-
-            override fun onBindViewHolder(holder: ReaderHolder, position: Int) =
-                holder.bind(paths[position])
-
-            override fun onViewRecycled(holder: ReaderHolder) {
-                holder.recycle()
-            }
-        }
-        recycler.adapter = adapter
-        val lm = recycler.layoutManager as androidx.recyclerview.widget.LinearLayoutManager
-        recycler.addOnScrollListener(
-            object : androidx.recyclerview.widget.RecyclerView.OnScrollListener() {
-                override fun onScrolled(rv: androidx.recyclerview.widget.RecyclerView,
-                                        dx: Int, dy: Int) {
-                    val pos = lm.findFirstVisibleItemPosition()
-                    if (pos >= 0 && pos < paths.size) {
-                        pill.text = "صفحه ${pos + 1} از ${paths.size}"
-                    }
-                }
-            })
-
         val root = android.widget.FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        root.addView(recycler, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT))
-        root.addView(pill, android.widget.FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(14) })
+        root.addView(wv, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         root.addView(close, android.widget.FrameLayout.LayoutParams(
             dp(34), dp(34), Gravity.TOP or Gravity.END).apply {
             topMargin = dp(10); marginEnd = dp(10) })
@@ -1137,206 +1135,23 @@ class MainActivity : AppCompatActivity() {
         dlg.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT)
         close.setOnClickListener { dlg.dismiss() }
+        // ✕ داخل نوار خوانندهٔ وب → window.close() → بستن دیالوگ اندروید
+        wv.webChromeClient = object : android.webkit.WebChromeClient() {
+            override fun onCloseWindow(window: android.webkit.WebView?) {
+                dlg.dismiss()
+            }
+        }
         dlg.setOnDismissListener {
-            ui.removeCallbacks(hideRun)
-            decoder.shutdownNow()
+            wv.stopLoading()
+            (wv.parent as? ViewGroup)?.removeView(wv)
+            wv.destroy()
         }
-        val s0 = start.coerceIn(0, paths.size - 1)
-        pill.text = "صفحه ${s0 + 1} از ${paths.size}"
-        recycler.post { lm.scrollToPosition(s0) }
         dlg.show()
-        showChrome()
-        if (!prefs.getBoolean("viewer_hint_v2", false)) {
-            prefs.edit().putBoolean("viewer_hint_v2", true).apply()
+        if (!prefs.getBoolean("viewer_hint_v3", false)) {
+            prefs.edit().putBoolean("viewer_hint_v3", true).apply()
             Toast.makeText(this,
-                "صفحه‌ها به‌ترتیب زیر هم چیده شدن • برای زوم دبل‌تپ بزن یا پینچ کن",
+                "نمایشگر مثل نسخهٔ وب شد • پینچ یا دبل‌تپ = زوم • دکمه‌های بالای صفحه: بزرگ/کوچک/پهنا/فول‌اسکرین",
                 Toast.LENGTH_LONG).show()
-        }
-    }
-
-    /** یک ردیف لیست عمودی — HorizontalScrollView (پن افقی در زوم) + PageView.
-     *  زوم به‌صورت «تغییر اندازهٔ خود ویو» انجام می‌شود تا اسکرول عمودی لیست
-     *  همیشه طبیعی بماند (الگوی خوانندهٔ وب‌تون). */
-    private inner class ReaderHolder(
-        ctx: android.content.Context,
-        private val list: androidx.recyclerview.widget.RecyclerView,
-        private val screenW: Int,
-        private val cache: android.util.LruCache<String, android.graphics.Bitmap>,
-        private val decoder: java.util.concurrent.Executor,
-        private val onTap: () -> Unit,
-    ) : androidx.recyclerview.widget.RecyclerView.ViewHolder(
-        android.widget.HorizontalScrollView(ctx).apply {
-            isFillViewport = false
-            isHorizontalScrollBarEnabled = false
-            setBackgroundColor(Color.BLACK)
-        }) {
-
-        val page = PageView(ctx)
-        private var ratio = 1.4f   // ارتفاع/عرض تخمینی تا رسیدن بیت‌مپ
-        private var zoom = 1f      // ۱ = به‌اندازهٔ عرض صفحه
-
-        init {
-            itemView.layoutParams = androidx.recyclerview.widget.RecyclerView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            (itemView as android.widget.HorizontalScrollView).addView(page)
-        }
-
-        fun bind(path: String) {
-            page.tag = path
-            page.onTap = { onTap() }
-            val b = cache.get(path)
-            if (b != null) {
-                page.setImageBitmap(b)
-                ratio = b.height.toFloat() / b.width.toFloat()
-                zoom = 1f
-                page.post { applySize() }
-            } else {
-                page.setImageBitmap(null)
-                ratio = 1.4f
-                zoom = 1f
-                page.post { applySize() }
-                decoder.execute {
-                    val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    BitmapFactory.decodeFile(path, o)
-                    var sample = 1
-                    var m = maxOf(o.outWidth, o.outHeight)
-                    while (m / sample >= 2560) sample *= 2
-                    val bmp = BitmapFactory.decodeFile(path,
-                        BitmapFactory.Options().apply { inSampleSize = sample })
-                    if (bmp != null) cache.put(path, bmp)
-                    page.post {
-                        if (page.tag == path && bmp != null) {
-                            page.setImageBitmap(bmp)
-                            ratio = bmp.height.toFloat() / bmp.width.toFloat()
-                            applySize()
-                        }
-                    }
-                }
-            }
-        }
-
-        fun recycle() {
-            page.tag = null
-            page.setImageBitmap(null)
-        }
-
-        private fun applySize() {
-            val w = (screenW * zoom).toInt().coerceAtLeast(1)
-            val h = (w * ratio).toInt().coerceAtLeast(1)
-            // ⚠ فیکس کرش (v1.22): قبلاً «page.layoutParams = ViewGroup.LayoutParams(w,h)»
-            // بود — پارامتر خام به والد FrameLayout‌محور (HorizontalScrollView) موقع
-            // measure به MarginLayoutParams کست می‌شود → ClassCastException → کرش
-            // «نمایش زدم برنامه کرش کرد». حالا همان پارامتر موجود تغییر می‌کند.
-            val lp = page.layoutParams as? ViewGroup.MarginLayoutParams ?: return
-            if (lp.width != w || lp.height != h) {
-                lp.width = w
-                lp.height = h
-                page.layoutParams = lp
-            }
-        }
-
-        /** ImageView صفحه — همهٔ لمس‌ها را می‌گیرد و خودش توزیع می‌کند:
-         *  اسکرول عمودی → لیست، پن افقی در زوم → HorizontalScrollView،
-         *  پینچ/دبل‌تپ → تغییر zoom (اندازهٔ ویو).
-         *  ⚠ فیکس v1.23: تا v1.22 «requestDisallowInterceptTouchEvent» فقط وقتی
-         *  صدا زده می‌شد که ScaleGestureDetector کامل شروع شده بود؛ RecyclerView
-         *  خیلی زودتر (بعد از touch-slop) لمس را می‌دزدید → پینچ عملاً کار
-         *  نمی‌کرد و فقط لیست اسکرول می‌شد. حالا از همان DOWN لمس قفل می‌شود.
-         *  ضمناً زوم حالا «لنگرشده روی نقطهٔ لمس» است — قبلاً از بالا-چپ بزرگ
-         *  می‌شد و تصویر انگار به پایین می‌پرید؛ با دبل‌تپ دوم برمی‌گشت. */
-        inner class PageView(ctx: android.content.Context) :
-            androidx.appcompat.widget.AppCompatImageView(ctx) {
-
-            var onTap: (() -> Unit)? = null
-
-            private val hsv: android.widget.HorizontalScrollView
-                get() = itemView as android.widget.HorizontalScrollView
-
-            /** بعد از تغییر zoom، اسکرول لیست/پن افقی را جابه‌جا می‌کند تا
-             *  نقطهٔ (fx,fy)ِ لمس زیر انگشت ثابت بماند (لنگر زوم). */
-            private fun anchorScroll(fx: Float, fy: Float, z0: Float, z1: Float) {
-                if (z0 <= 0f || z1 <= 0f || z1 == z0) return
-                val k = z1 / z0
-                val dy = (fy * (k - 1f)).toInt()
-                val dx = (fx * (k - 1f)).toInt()
-                if (dy != 0) list.scrollBy(0, dy)
-                if (dx != 0) hsv.scrollBy(dx, 0)
-            }
-
-            private val scaleDet = android.view.ScaleGestureDetector(ctx,
-                object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
-                    override fun onScaleBegin(
-                        d: android.view.ScaleGestureDetector,
-                    ): Boolean {
-                        parent?.requestDisallowInterceptTouchEvent(true)
-                        return true
-                    }
-
-                    override fun onScale(d: android.view.ScaleGestureDetector): Boolean {
-                        val before = zoom
-                        zoom = (zoom * d.scaleFactor).coerceIn(1f, 4f)
-                        if (zoom != before) {
-                            applySize()
-                            anchorScroll(d.focusX, d.focusY, before, zoom)
-                        }
-                        return true
-                    }
-                })
-
-            private val gest = android.view.GestureDetector(ctx,
-                object : android.view.GestureDetector.SimpleOnGestureListener() {
-                    override fun onDown(e: android.view.MotionEvent): Boolean {
-                        // از همان اول لمس: RecyclerView/HSV اجازهٔ دزدیدن ندارند
-                        // (ریشهٔ «پینچ کار نمی‌کند و فقط می‌پرید پایین»)
-                        parent?.requestDisallowInterceptTouchEvent(true)
-                        return true
-                    }
-
-                    override fun onScroll(e1: android.view.MotionEvent?,
-                                          e2: android.view.MotionEvent,
-                                          dx: Float, dy: Float): Boolean {
-                        // افقی: فقط وقتی زوم‌شده محدودهٔ پن وجود دارد
-                        hsv.scrollBy((-dx).toInt(), 0)
-                        // عمودی: همیشه لیست جلو می‌رود (خواندن از بالا به پایین)
-                        list.scrollBy(0, dy.toInt())
-                        return true
-                    }
-
-                    override fun onSingleTapConfirmed(e: android.view.MotionEvent): Boolean {
-                        onTap?.invoke(); return true
-                    }
-
-                    override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
-                        val before = zoom
-                        zoom = if (before > 1.2f) 1f else 2.5f
-                        applySize()
-                        // لنگر روی همان نقطه‌ای که دبل‌تپ شده — نه گوشهٔ بالا
-                        anchorScroll(e.x, e.y, before, zoom)
-                        return true
-                    }
-
-                    override fun onFling(e1: android.view.MotionEvent?,
-                                         e2: android.view.MotionEvent,
-                                         vx: Float, vy: Float): Boolean {
-                        list.fling(0, vy.toInt())
-                        return true
-                    }
-                })
-
-            init {
-                scaleType = ImageView.ScaleType.FIT_CENTER
-                adjustViewBounds = false
-            }
-
-            override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
-                if (e.actionMasked == android.view.MotionEvent.ACTION_UP ||
-                    e.actionMasked == android.view.MotionEvent.ACTION_CANCEL) {
-                    parent?.requestDisallowInterceptTouchEvent(false)
-                }
-                scaleDet.onTouchEvent(e)
-                if (!scaleDet.isInProgress) gest.onTouchEvent(e)
-                return true
-            }
         }
     }
 

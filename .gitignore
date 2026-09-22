@@ -7,7 +7,8 @@ __pycache__/
 *.pyc
 web_out.log
 mf_test.json
-android/app/src/main/assets/
+android/app/src/main/assets/engine/
+android/app/src/main/assets/reader.bak.html
 android/.kotlin/
 
 # ---- بسته‌های vendored (از v1.24 در گیت نیستند — build.yml خودش با
