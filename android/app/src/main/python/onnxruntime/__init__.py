@@ -17,6 +17,12 @@ def preload_dlls(*a, **k):
 
 try:
     from java import jclass, jarray
+    # نشان‌گرهای نوع اولیه — برای API فراخوانی‌پذیر jarray(jtype)(seq)
+    try:
+        from java import (jfloat as _JF, jdouble as _JD, jlong as _JL,
+                          jint as _JI, jbyte as _JB)
+    except Exception:
+        _JF = _JD = _JL = _JI = _JB = None
     _FloatBuffer = jclass("java.nio.FloatBuffer")
     _LongBuffer = jclass("java.nio.LongBuffer")
     _IntBuffer = jclass("java.nio.IntBuffer")
@@ -32,6 +38,64 @@ try:
 except Exception as _e:
     _OK = False
     _IMPORT_ERR = _e
+
+# ---------------------------------------------------------------- ساخت آرایه جاوا
+# نکته مهم: در چاکوپی ۱۵/۱۶، «jarray» یک تابع فراخوانی‌پذیر (Cython) است و
+# ویژگی zeros ندارد → «jarray.zeros(n, code)» با ارور
+# «'_cython_…cython_function_or_method' object has no attribute 'zeros'»
+# می‌شکند (ارور واقعی دستگاه کاربر). پس هر سه سازوکار را به‌ترتیب امتحان
+# می‌کنیم و موفق‌بار اول را کش می‌کنیم:
+#   ۱) jarray(jtype)(seq) — هم‌زمان می‌سازد و پر می‌کند (پایدارترین)
+#   ۲) jarray.zeros(n, code) — API قدیمی
+#   ۳) java.lang.reflect.Array.newInstance(Float.TYPE, n)
+_JCODE_TYPE = {"f": ("JF", "float"), "d": ("JD", "double"),
+               "j": ("JL", "long"), "i": ("JI", "int"), "b": ("JB", "byte")}
+_JSTRAT = {"n": 0}   # 0=نمی‌دانیم، ۱/۲/۳ استراتژی موفق
+
+
+def _prim_cls(name):
+    """کلاس نوع اولیه جاوا (float و …) بدون نیاز به jfloat و …"""
+    box = {"float": "Float", "double": "Double", "long": "Long",
+           "int": "Integer", "byte": "Byte"}[name]
+    return jclass("java.lang." + box).TYPE
+
+
+def _jarr_fill(seq, code):
+    """آرایه جاوا از یک دنباله پایتون — با پرچم استراتژی کش‌شده."""
+    seq = list(seq)
+    s = _JSTRAT["n"]
+    if s == 0 or s == 1:
+        try:
+            tname, prim = _JCODE_TYPE[code]
+            jt = {"JF": _JF, "JD": _JD, "JL": _JL, "JI": _JI,
+                  "JB": _JB}.get(tname)
+            if jt is None:
+                jt = _prim_cls(prim)
+            arr = jarray(jt)(seq)
+            _JSTRAT["n"] = 1
+            return arr
+        except Exception:
+            if s == 1:
+                raise
+            _JSTRAT["n"] = 2
+    if s == 0 or s == 2:
+        try:
+            arr = jarray.zeros(len(seq), code)
+            for i, v in enumerate(seq):
+                arr[i] = v
+            _JSTRAT["n"] = 2
+            return arr
+        except Exception:
+            if s == 2:
+                raise
+            _JSTRAT["n"] = 3
+    # استراتژی ۳ — reflect
+    prim = _JCODE_TYPE[code][1]
+    _Arr = jclass("java.lang.reflect.Array")
+    arr = _Arr.newInstance(_prim_cls(prim), len(seq))
+    for i, v in enumerate(seq):
+        arr[i] = v
+    return arr
 
 
 class ExecutionMode:
@@ -124,7 +188,11 @@ def _buf_of(ja, code):
 
 
 def _tensor_create(x):
-    """numpy → OnnxTensor جاوا."""
+    """numpy → OnnxTensor جاوا.
+
+    نکته: ساخت آرایه جاوا با _jarr_fill انجام می‌شود، نه jarray.zeros —
+    چون در چاکوپی‌های جدید jarray.zeros وجود ندارد (بمب ارور cython/zeros).
+    """
     if not isinstance(x, np.ndarray):
         x = np.asarray(x)
     if x.dtype == np.float64:
@@ -144,11 +212,8 @@ def _tensor_create(x):
     else:
         flat = flat.astype(np.float32)
         code = "f"
-    ja = jarray.zeros(flat.size, code)
-    ja[:] = flat.tolist()
-    shape = jarray.zeros(x.ndim, "j")
-    for i in range(x.ndim):
-        shape[i] = int(x.shape[i])
+    ja = _jarr_fill(flat.tolist(), code)
+    shape = _jarr_fill([int(v) for v in x.shape], "j")
     return _OnnxTensor.createTensor(_ENV, _buf_of(ja, code), shape)
 
 

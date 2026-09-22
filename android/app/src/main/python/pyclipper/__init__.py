@@ -32,20 +32,47 @@ class _Offset:
         return True
 
     def Execute(self, delta):
+        """آفست چندضلعی با shapely + fallback مستطیلی.
+
+        نکته ۱ (مهم): pyclipper واقعی مختصات «عدد صحیح» برمی‌گرداند؛
+        اگر این‌جا float برگردانیم، np.array در rapidocr → dtype=float64
+        می‌شود و cv2.minAreaRect (در get_mini_boxes) با ارور
+        convhull.cpp «depth == CV_32F || CV_32S» می‌شکند.
+        پس خروجی همیشه int است — عین pyclipper واقعی.
+
+        نکته ۲: اگر چندضلعی تخریب‌شده باشد (مساحت ~۰)، shapely خروجی خالی
+        می‌دهد؛ آن‌وقت مستطیل محاطی + دلتا برمی‌گردانیم تا خروجی خالی نماند.
+        """
         out = []
+        d = abs(float(delta))
         for pts in self._paths:
+            grown = None
             try:
                 poly = Polygon(pts)
                 if not poly.is_valid:
                     poly = poly.buffer(0)
-                if poly.is_empty:
-                    continue
-                grown = poly.buffer(delta / 2.0, join_style="round")
-                coords = list(grown.exterior.coords)[:-1]
-                if len(coords) >= 3:
-                    out.append([[x, y] for x, y in coords])
+                if poly.is_empty or poly.area <= 1e-9:
+                    poly = None
+                else:
+                    grown = poly.buffer(d, join_style="round")
+                    if grown.is_empty or grown.exterior is None:
+                        grown = None
             except Exception:
+                grown = None
+            if grown is None:
+                try:
+                    xs = [float(p[0]) for p in pts]
+                    ys = [float(p[1]) for p in pts]
+                    out.append([[int(round(min(xs) - d)), int(round(min(ys) - d))],
+                                [int(round(max(xs) + d)), int(round(min(ys) - d))],
+                                [int(round(max(xs) + d)), int(round(max(ys) + d))],
+                                [int(round(min(xs) - d)), int(round(max(ys) + d))]])
+                except Exception:
+                    pass
                 continue
+            coords = list(grown.exterior.coords)[:-1]
+            if len(coords) >= 3:
+                out.append([[int(round(x)), int(round(y))] for x, y in coords])
         return out
 
 

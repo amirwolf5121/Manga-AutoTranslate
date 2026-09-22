@@ -2,25 +2,18 @@
 # -*- coding: utf-8 -*-
 """نقطه ورود اپ اندروید.
 
-کارها: (۱) چک نسخه داخل APK روی دیسک (Kotlin از assets/engine کپی می‌کند)،
-(۲) آپدیت خودکار manga.py / manga_app.py / bridge.py / extract_ui.py از گیت‌هاب
-فقط وقتی APP_VER ریپو از نسخه فعلی بالاتر باشد.
+موتور (manga.py / manga_app.py / …) فقط از داخل APK می‌آید: Kotlin فایل‌های
+assets/engine را روی دیسک کپی می‌کند و همین‌جا روی sys.path می‌رود.
 
-هر فایلی که در ریپو با APP_VER بالاتر پوش شود، در اجرای بعدی اپ به‌صورت
-خودکار جایگزین می‌شود — بدون نصب دوباره.
+آپدیت آنلاین از release «files» (apply_updates قدیمی) کلاً حذف شده — اپ دیگر
+هیچ فایلی را از گیت‌هاب دانلود/جایگزین نمی‌کند؛ نسخه موتور همیشه همان است که
+با APK نصب شده (قابل پیش‌بینی و تست‌شده).
 """
 import os
 import re
 import shutil
 import sys
 import traceback
-
-REPO_RAWS = [
-    "https://raw.githubusercontent.com/amirwolf512k/Manga-AutoTranslate/main",
-    "https://raw.githubusercontent.com/amirwolf5122/Manga-AutoTranslate/main"
-]
-UPDATE_FILES = ["manga.py", "manga_app.py", "app_server.py", "bridge.py",
-                "extract_ui.py"]
 
 # ---------- لاگ راه‌اندازی برای نمایش در UI ----------
 LOGS = []
@@ -111,69 +104,17 @@ def check_bundled(files_dir):
 
 
 def apply_updates(files_dir):
-    """آپدیت از ریپو فقط وقتی APP_VER ریپو بالاتر از نسخه فعلی دیسک باشد."""
+    """آپدیت آنلاین حذف شده — فقط نسخه داخل APK.
+
+    قبلاً این تابع manga.py / manga_app.py / bridge.py و … را از release
+    «files» گیت‌هاب دانلود و روی دیسک می‌نوشت؛ طبق درخواست صاحب اپ این مسیر
+    کلاً بسته شد: هیچ درخواست شبکه‌ای زده نمی‌شود و فایل‌های روی دیسک همان
+    کپی Kotlin از assets/engine می‌مانند (نسخه‌ای که با APK تست شده).
+    """
     upd_dir = os.path.join(files_dir, "updates")
     os.makedirs(upd_dir, exist_ok=True)
     check_bundled(files_dir)
-    cur_ver = max(_file_ver(upd_dir, "manga_app"),
-                  _pyfile_ver(os.path.join(upd_dir, "manga_app.py")))
-
-    import requests
-
-    def _fetch(name):
-        """اول release-asset ریپو (در ایران باز است)، بعد raw (اغلب بلاک)."""
-        urls = [
-            "https://github.com/amirwolf5121/Manga-AutoTranslate/releases/download/files/"
-            + name,
-            "https://github.com/amirwolf5122/Manga-AutoTranslate/releases/download/files/"
-            + name,
-        ] + ["%s/%s" % (base, name) for base in REPO_RAWS]
-        for u in urls:
-            try:
-                r = requests.get(u, timeout=30)
-                if r.status_code == 200 and len(r.content) > 500:
-                    return r.content
-            except Exception:
-                pass
-        return None
-
-    head = _fetch("manga_app.py")
-    if head is None:
-        _log("آپدیت چک نشد (شبکه در دسترس نیست) — نسخه داخل APK استفاده می‌شود.")
-        return upd_dir
-    new_ver = _read_ver_from_str(head.decode("utf-8", "replace"))
-
-    if _cmp_ver(new_ver, cur_ver) <= 0:
-        _log("ریپو هم‌نسخه/قدیمی‌تر است (%s ≤ %s) — آپدیت لازم نیست."
-             % (new_ver or "?", cur_ver or "?"))
-        return upd_dir
-
-    tmp_dir = os.path.join(files_dir, "updates_tmp")
-    shutil.rmtree(tmp_dir, ignore_errors=True)
-    os.makedirs(tmp_dir, exist_ok=True)
-    with open(os.path.join(tmp_dir, "manga_app.py"), "wb") as f:
-        f.write(head)
-    ok_any = True
-    for name in UPDATE_FILES:
-        if name == "manga_app.py":
-            continue
-        data = _fetch(name)
-        if data is None:
-            _log("دانلود نشد: %s" % name)
-            ok_any = False
-            continue
-        with open(os.path.join(tmp_dir, name), "wb") as f:
-            f.write(data)
-    if not ok_any:
-        _log("آپدیت ناقص ماند — نسخه فعلی نگه داشته شد.")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return upd_dir
-
-    shutil.rmtree(upd_dir, ignore_errors=True)
-    os.rename(tmp_dir, upd_dir)
-    for name in UPDATE_FILES:
-        _stamp(upd_dir, name, new_ver)
-    _log("آپدیت از ریپو اعمال شد: %s → %s" % (cur_ver or "نصب اولیه", new_ver))
+    _log("آپدیت آنلاین غیرفعال — نسخه موتور از داخل APK استفاده می‌شود.")
     return upd_dir
 
 

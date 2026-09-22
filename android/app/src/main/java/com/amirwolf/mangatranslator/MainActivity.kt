@@ -257,11 +257,21 @@ class MainActivity : AppCompatActivity() {
 
 
     /** کپی manga.py / manga_app.py از assets/engine به files/updates.
-     *  اگر نسخه asset جدیدتر باشد یا فایل قبلی خالی/خراب، بازنویسی می‌شود —
-     *  آپدیت جدیدتر ریپو با مهر نسخه محافظت می‌شود. */
+     *  آپدیت آنلاین از release «files» کلاً حذف شده است؛ موتور فقط از APK می‌آید.
+     *  یک‌بار (با مهر .engine_offline_v1) فایل‌های موتورِ قبلی روی دیسد پاک
+     *  می‌شوند تا دقیقاً نسخه‌ی همراه این APK جای‌گزین شود — حتی اگر نسخه
+     *  قبلی از آپدیت شبکه APP_VER بالاتری داشته باشد. */
     private fun copyBundledSources() {
         try {
             val upd = File(filesDir, "updates").apply { mkdirs() }
+            val marker = File(upd, ".engine_offline_v1")
+            if (!marker.exists()) {
+                upd.listFiles()?.forEach { f ->
+                    if (f.name.endsWith(".py") || f.name.startsWith(".ver_")) f.delete()
+                }
+                marker.writeText("1")
+                android.util.Log.i("MangaApp", "engine reset → bundled copy (no net updates)")
+            }
             val names = assets.list("engine") ?: return
             for (name in names) {
                 if (!name.endsWith(".py")) continue
@@ -963,22 +973,139 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** نمایشگر تمام‌صفحه با اسکرول و زوم دو-انگشتی (بزرگ/کوچک کردن عکس).
+     *  دبل-تپ: زوم ×2.5 / برگشت به اندازه‌ی صفحه. با دو دکمه صفحه قبل/بعد. */
     private fun viewer(paths: List<String>, start: Int) {
-        val iv = ImageView(this).apply {
-            adjustViewBounds = true
-            val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
-            setImageBitmap(BitmapFactory.decodeFile(paths[start], opts))
+        val iv = ZoomImageView(this)
+        var idx = start
+        val wrap = android.widget.FrameLayout(this).apply {
+            addView(iv, ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT)
         }
-        val wrap = ScrollView(this).apply { addView(iv) }
-        AlertDialog.Builder(this)
-            .setTitle("صفحه ${start + 1} از ${paths.size} — برای بستن برگرد")
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("صفحه ${idx + 1} از ${paths.size}")
             .setView(wrap)
-            .setPositiveButton("بعدی") { d, _ ->
-                d.dismiss()
-                viewer(paths, (start + 1) % paths.size)
-            }
+            .setPositiveButton("بعدی", null)
+            .setNeutralButton("قبلی", null)
             .setNegativeButton("بستن", null)
-            .show()
+            .create()
+        dlg.setOnShowListener {
+            val show = {
+                dlg.setTitle("صفحه ${idx + 1} از ${paths.size}")
+                iv.setImagePath(paths[idx])
+            }
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                idx = (idx + 1) % paths.size; show()
+            }
+            dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                idx = (idx - 1 + paths.size) % paths.size; show()
+            }
+            show()
+        }
+        dlg.show()
+    }
+
+    /** ImageView با زوم پینچ، پن (جابه‌جایی) و دبل-تپ — جایگزین ScrollView ساده. */
+    private inner class ZoomImageView(ctx: android.content.Context) :
+        androidx.appcompat.widget.AppCompatImageView(ctx) {
+
+        private val mat = android.graphics.Matrix()
+        private val vals = FloatArray(9)
+        private var minScale = 1f
+        private var maxScale = 10f
+
+        private val scaleDet = android.view.ScaleGestureDetector(ctx,
+            object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(d: android.view.ScaleGestureDetector): Boolean {
+                    zoom(d.scaleFactor, d.focusX, d.focusY); return true
+                }
+            })
+
+        private val gest = android.view.GestureDetector(ctx,
+            object : android.view.GestureDetector.SimpleOnGestureListener() {
+                override fun onDown(e: android.view.MotionEvent): Boolean = true
+                override fun onScroll(e1: android.view.MotionEvent?,
+                                      e2: android.view.MotionEvent,
+                                      dx: Float, dy: Float): Boolean {
+                    mat.postTranslate(-dx, -dy); apply(); return true
+                }
+                override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
+                    if (curScale() > minScale * 1.25f) fit()
+                    else zoom(2.5f, e.x, e.y)
+                    return true
+                }
+            })
+
+        init {
+            scaleType = ImageView.ScaleType.MATRIX
+        }
+
+        fun setImagePath(path: String) {
+            val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, o)
+            var sample = 1
+            var m = maxOf(o.outWidth, o.outHeight)
+            while (m > 3000) { sample *= 2; m /= 2 }
+            val bmp = BitmapFactory.decodeFile(path,
+                BitmapFactory.Options().apply { inSampleSize = sample })
+            setImageBitmap(bmp)
+            post { fit() }
+        }
+
+        private fun curScale(): Float {
+            mat.getValues(vals)
+            return vals[android.graphics.Matrix.MSCALE_X]
+        }
+
+        private fun zoom(f: Float, fx: Float, fy: Float) {
+            mat.postScale(f, f, fx, fy); apply()
+        }
+
+        private fun fit() {
+            val d = drawable ?: return
+            if (width == 0 || height == 0) return
+            val iw = d.intrinsicWidth.toFloat()
+            val ih = d.intrinsicHeight.toFloat()
+            if (iw <= 0f || ih <= 0f) return
+            val s = minOf(width / iw, height / ih)
+            minScale = s; maxScale = s * 10f
+            mat.setScale(s, s)
+            mat.postTranslate((width - iw * s) / 2f, (height - ih * s) / 2f)
+            apply()
+        }
+
+        private fun apply() {
+            val d = drawable ?: return
+            mat.getValues(vals)
+            val s0 = vals[android.graphics.Matrix.MSCALE_X]
+            val s = s0.coerceIn(minScale, maxScale)
+            if (s != s0) {
+                mat.postScale(s / s0, s / s0,
+                    vals[android.graphics.Matrix.MTRANS_X],
+                    vals[android.graphics.Matrix.MTRANS_Y])
+                mat.getValues(vals)
+            }
+            val iw = d.intrinsicWidth * s
+            val ih = d.intrinsicHeight * s
+            var tx = vals[android.graphics.Matrix.MTRANS_X]
+            var ty = vals[android.graphics.Matrix.MTRANS_Y]
+            tx = if (iw <= width) (width - iw) / 2f
+                 else tx.coerceIn(width - iw, 0f)
+            ty = if (ih <= height) (height - ih) / 2f
+                 else ty.coerceIn(height - ih, 0f)
+            val dx = tx - vals[android.graphics.Matrix.MTRANS_X]
+            val dy = ty - vals[android.graphics.Matrix.MTRANS_Y]
+            if (dx != 0f || dy != 0f) mat.postTranslate(dx, dy)
+            imageMatrix = mat
+            invalidate()
+        }
+
+        override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+            scaleDet.onTouchEvent(e)
+            if (!scaleDet.isInProgress) gest.onTouchEvent(e)
+            parent?.requestDisallowInterceptTouchEvent(true)
+            return true
+        }
     }
 
     private fun saveToDownloads(path: String) {
