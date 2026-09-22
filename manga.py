@@ -4,7 +4,11 @@ from __future__ import annotations
 
 # نسخهٔ موتور — Kotlin برای به‌روزرسانی خودکار موتور، این را با نسخهٔ روی دیسد
 # مقایسه می‌کند (باید در ۸KB اول فایل بماند و در هر ریلیس بالا برود).
-APP_VER = "1.23"
+# 🩹 v1.26 — تا v1.25 همین «1.23» مانده بود → Kotlin فایل قدیمی روی دیسد را
+# جایگزین نمی‌کرد و همهٔ فیکس‌های v1.23/v1.24/v1.25 (لامای خودکار، گیت رم، …)
+# هرگز به گوشی کاربر نمی‌رسیدند! از این به بعد با هر ریلیس الزاماً bump شود
+# (فیکس Kotlin، مقایسهٔ MD5، هم اضافه شد تا این فراموشی دیگر بی‌اثر باشد).
+APP_VER = "1.26"
 
 DEFAULT_SYSTEM_INSTRUCTION_STYLE = """
 تو مترجم مانگا و مانهوا به فارسی گفتاری ایرانی هستی. کار تو دوبله است، نه ترجمه لغت‌به‌لغت.
@@ -3893,6 +3897,45 @@ class MangaTranslator:
             if x1 - x0 < 8 or y1 - y0 < 8:
                 continue
 
+            # 🩹 v1.26 — متن کج: چندضلعیِ مستطیلِ چرخاندهٔ بلوک متن از روی rect و
+            # زاویه ساخته می‌شود (نه از polyهای ناقص OCR) و زون، بعدها آن را
+            # می‌پوشاند. حاشیه‌ها کم است تا نشان/لوگوی بالای متن خورده نشود
+            # (باگ واقعی روی عکس تست: نیمهٔ نشان «وزارت» پاک شد).
+            _fill_poly = None
+            try:
+                _angs = float(getattr(region, "angle", 0.0) or 0.0)
+            except Exception:
+                _angs = 0.0
+            if _angs != _angs or _angs in (float("inf"), float("-inf")):
+                _angs = 0.0
+            if abs(_angs) >= 8.0:
+                _th = np.radians(_angs)
+                _c, _s = float(np.cos(_th)), float(np.sin(_th))
+                _den = _c * _c - _s * _s
+                if _den > 0.05:
+                    _bx, _by, _bw, _bh = [float(v) for v in region.rect]
+                    _ws = (_bw * _c - _bh * _s) / _den
+                    _hs = (_bh * _c - _bw * _s) / _den
+                    if 16 < _ws < (_bw + _bh) and 8 < _hs < (_bw + _bh):
+                        _c0 = np.array([_bx + _bw / 2.0, _by + _bh / 2.0], dtype=np.float32)
+                        _u = np.array([_c, _s], dtype=np.float32)      # محور طولی متن
+                        _v = np.array([-_s, _c], dtype=np.float32)     # محور عرضی
+                        _hw = _ws * 0.5 + max(8.0, _ws * 0.06)  # دو سرِ خط (کلمات بریده)
+                        _hh = _hs * 0.5                          # کمتر از نیم‌ارتفاع → نشانِ بالای متن امن
+                        _corners = [
+                            _c0 + _hw * _u + _hh * _v,
+                            _c0 - _hw * _u + _hh * _v,
+                            _c0 - _hw * _u - _hh * _v,
+                            _c0 + _hw * _u - _hh * _v,
+                        ]
+                        _fill_poly = np.rint(np.stack(_corners)).astype(np.int32)
+                        # زون باید چندضلعی را کامل بپوشاند وگرنه fillPoly می‌بُرد
+                        _pb = _fill_poly
+                        x0 = max(0, min(int(x0), int(_pb[:, 0].min()) - 2))
+                        y0 = max(0, min(int(y0), int(_pb[:, 1].min()) - 2))
+                        x1 = min(w_img, max(int(x1), int(_pb[:, 0].max()) + 3))
+                        y1 = min(h_img, max(int(y1), int(_pb[:, 1].max()) + 3))
+
             zone = self._text_zone_in_crop(region, x0, y0, x1, y1)
             ch, cw = y1 - y0, x1 - x0
             det_class = (getattr(region, "det_class", "") or "")
@@ -3918,6 +3961,12 @@ class MangaTranslator:
                 ink = self._protect_bubble_wall(ink, gray[y0:y1, x0:x1])
                 if np.count_nonzero(ink) > 0.45 * ch * cw:
                     continue
+            # 🩹 v1.26 — متن کج: کلِ مستطیلِ چرخانده ماسک می‌شود — polyهای OCR
+            # کلماتِ بریده‌شده را ندارند (باگ «ORDINANCE ON» روی عکس تست).
+            if _fill_poly is not None:
+                _fill = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
+                cv2.fillPoly(_fill, [_fill_poly - np.array([x0, y0], dtype=np.int32)], 255)
+                ink = cv2.bitwise_or(ink, _fill) if ink is not None else _fill
             if padding:
                 ink = cv2.dilate(ink, kernel)
             text_mask[y0:y1, x0:x1] = cv2.bitwise_or(text_mask[y0:y1, x0:x1], ink)
@@ -4055,6 +4104,18 @@ class MangaTranslator:
                     print(f"  [!] LaMa failed ({e}); using OpenCV for this crop.")
                     result = None
             if result is None:
+                # 🩹 v1.26 — «حروفش بپاکه، مربع نکش»: اول ماسک به خودِ حروف
+                # باریک می‌شود (پیکسل‌های جوهر داخل ناحیهٔ ماسک) تا Telea فقط
+                # شکافِ حروف را بازسازی کند و مربعِ لکه‌ای روی بافت نسازد؛
+                # اگر رفاینامد، ماسک قبلی ضخیم و بسته می‌شود تا شبحِ حرف
+                # بازسازی نشود («متن جا نذاره»).
+                _refined = self._glyph_refine_mask(crop_img, crop_msk)
+                if _refined is not None:
+                    crop_msk = _refined
+                else:
+                    _oc_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+                    crop_msk = cv2.dilate(crop_msk, _oc_k, iterations=1)
+                    crop_msk = cv2.morphologyEx(crop_msk, cv2.MORPH_CLOSE, _oc_k)
                 result = self._opencv_inpaint_hq(crop_img, crop_msk)
                 method = "OpenCV"
             mm = crop_msk > 0
@@ -4065,6 +4126,34 @@ class MangaTranslator:
         print(f"  - Cleanup: {counts}")
         return cleaned
 
+
+    def _glyph_refine_mask(self, image: np.ndarray, mask: np.ndarray) -> Optional[np.ndarray]:
+        """🩹 v1.26 — «حروفش بپاکه، مربع نکش»: ماسک OpenCV به‌جای ناحیهٔ توپر،
+        خودِ پیکسل‌های جوهرِ حروف را می‌گیرد (تیره یا روشن نسبت به پس‌زمینهٔ
+        موضعی). Telea با شکافِ نازکِ حروف بسیار تمیزتر از مستطیلِ توپر
+        کار می‌کند و بافتِ پس‌زمینه بین خطوط سالم می‌ماند.
+        خروجی None = رفاینامد؛ ماسک اصلی با ضخیم‌سازی استفاده شود."""
+        try:
+            m0 = (mask > 0).astype(np.uint8)
+            area0 = int(m0.sum())
+            if area0 < 80 or area0 > 0.60 * mask.size:
+                return None  # خیلی ریز بی‌اثر است؛ خیلی بزرگ یعنی پاک‌سازیِ کلِ داخل
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            bg = cv2.medianBlur(gray, 31)
+            diff = gray.astype(np.int16) - bg.astype(np.int16)
+            zone = cv2.dilate(m0, np.ones((7, 7), np.uint8), iterations=1)
+            ink = ((np.abs(diff) > 26) & (zone > 0)).astype(np.uint8) * 255
+            ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+            ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+            ink = cv2.dilate(
+                ink, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1
+            )
+            cov = float(np.count_nonzero(ink)) / float(area0)
+            if cov < 0.12 or cov > 0.92:
+                return None  # کنتراست کم/رفای ناموفق، یا ماسک هم‌ارز جوهر است
+            return ink
+        except Exception:
+            return None
 
     def _opencv_inpaint_hq(self, image: np.ndarray, mask: np.ndarray) -> np.ndarray:
         if mask is None or not np.any(mask):
@@ -5815,6 +5904,24 @@ class MangaTranslator:
         crop0 = image_bgr[y1:y2, x1:x2]
         ch0, cw0 = crop0.shape[:2]
 
+        # 🩹 v1.26 — متن کج: کادر تشخیص، انتهایِ بالاروندهٔ متن را می‌بُرد
+        # (گزارش کاربر: کلمات اولِ متنِ کجِ روی کاغذ نه OCR می‌شدند نه پاک).
+        # اگر برش اولیه کج باشد، دوباره با حاشیهٔ بزرگ‌تر برش می‌زنیم تا کل
+        # بلوک متن داخل بیاید؛ هم OCR کامل می‌شود هم ماسک/رندر تا انتهای متن.
+        try:
+            _sk = self._estimate_skew_angle(crop0)
+        except Exception:
+            _sk = 0.0
+        _tilted0 = abs(_sk) >= 8.0
+        if _tilted0:
+            pad2 = min(120, int(abs(np.sin(np.radians(_sk))) * max(x2 - x1, y2 - y1)) + 16)
+            nx1, ny1 = max(0, int(rect[0]) - pad2), max(0, int(rect[1]) - pad2)
+            nx2, ny2 = min(w, int(rect[2]) + pad2), min(h, int(rect[3]) + pad2)
+            if (nx2 - nx1) > (x2 - x1) or (ny2 - ny1) > (y2 - y1):
+                x1, y1, x2, y2 = nx1, ny1, nx2, ny2
+                crop0 = image_bgr[y1:y2, x1:x2]
+                ch0, cw0 = crop0.shape[:2]
+
         def _run(crop_bgr, scale: float, apply_offset: bool = True):
             if scale > 1.01:
                 crop_bgr = cv2.resize(
@@ -5965,9 +6072,12 @@ class MangaTranslator:
             scv = _score(txt, conf)
             if scv > best[2]:
                 best = (txt, polys, scv)
-            
-            
-            if conf >= 0.86 and len(re.sub(r"[^A-Za-z]", "", txt or "")) >= 8:
+
+            # 🩹 v1.26 — روی برشِ کج، توقفِ زودهنگام ممنوع: OCR روی متنِ کج
+            # کلمات را جا می‌اندازد ولی اعتمادش بالاست (کلمهٔ «ORDINANCE ON»).
+            # نتیجهٔ نهایی فقط بعد از deskew-retry انتخاب می‌شود.
+            if ((not _tilted0) and conf >= 0.86
+                    and len(re.sub(r"[^A-Za-z]", "", txt or "")) >= 8):
                 early_stop = True
                 break
 
@@ -6021,13 +6131,22 @@ class MangaTranslator:
         
         skew = self._skew_from_quads(core, best[1], x1, y1, inset_used)
         if skew == 0.0:
-            skew = self._estimate_skew_angle(core)
+            skew = _sk if _sk != 0.0 else self._estimate_skew_angle(core)
         if (not early_stop) and skew != 0.0 and 4.0 <= abs(skew) <= 40.0 and (latin_n < 3 or abs(skew) >= 5.0):
             try:
                 hc, wc = core.shape[:2]
                 M = cv2.getRotationMatrix2D((wc / 2.0, hc / 2.0), skew, 1.0)
+                # 🩹 v1.26 — چرخش روی بومِ هم‌اندازه، گوشه‌های متن کج را دوباره
+                # می‌بُرد (دقیقاً همان کلماتی که OCR نمی‌شد — «ORDINANCE ON»).
+                # بوم بزرگ می‌شود تا کل متنِ چرخانده‌شده جا شود.
+                nw = int(round(wc * abs(np.cos(np.radians(skew))) +
+                               hc * abs(np.sin(np.radians(skew))))) + 4
+                nh = int(round(wc * abs(np.sin(np.radians(skew))) +
+                               hc * abs(np.cos(np.radians(skew))))) + 4
+                M[0, 2] += nw / 2.0 - wc / 2.0
+                M[1, 2] += nh / 2.0 - hc / 2.0
                 desk = cv2.warpAffine(
-                    core, M, (wc, hc),
+                    core, M, (nw, nh),
                     flags=cv2.INTER_CUBIC,
                     borderMode=cv2.BORDER_CONSTANT,
                     borderValue=(255, 255, 255),
@@ -6035,6 +6154,9 @@ class MangaTranslator:
                 txt, polys, conf, _entries = _run(desk, base_scale, apply_offset=False)
                 if txt and polys:
                     M_inv = cv2.getRotationMatrix2D((wc / 2.0, hc / 2.0), -skew, 1.0)
+                    # جبران جابه‌جایی مرکز بوم بزرگ‌شده در نگاشت معکوس
+                    M_inv[0, 2] += wc / 2.0 - nw / 2.0
+                    M_inv[1, 2] += hc / 2.0 - nh / 2.0
                     off = np.array([x1, y1], dtype=np.float32)
                     back_polys = []
                     for p in polys:
@@ -6206,8 +6328,8 @@ class MangaTranslator:
 
     @staticmethod
     def _estimate_angle_from_polys(polys) -> float:
-        
-        
+
+
         angs: List[float] = []
         for p in list(polys or []):
             try:
@@ -6216,17 +6338,29 @@ class MangaTranslator:
                 continue
             if pts.shape[0] < 2:
                 continue
-            dx = float(pts[1][0] - pts[0][0])
-            dy = float(pts[1][1] - pts[0][1])
-            if abs(dx) < 1e-3 and abs(dy) < 1e-3:
+            # 🩹 v1.26 — قبلاً جهتِ لبهٔ pts[0]→pts[1] مبنا بود که به ترتیبِ
+            # گوشه‌های poly وابسته است؛ تشخیص‌دهنده برای متنِ کج ترتیب را عوض
+            # می‌کند → علامتِ زاویه برعکس می‌شد (باگ «چرخش درست نیست»: «Hey»
+            # بالا‌رونده با angle=+14 رندرِ پایین‌رونده می‌گرفت). حالا ضلعِ
+            # بلندِ minAreaRect مبنا است — مستقل از ترتیبِ گوشه‌ها؛ قرارداد:
+            # منفی = سمت راست بالاتر (هم‌خوان با rotate(-angle) رندر).
+            try:
+                box = cv2.boxPoints(cv2.minAreaRect(pts.astype(np.float32)))
+            except Exception:
                 continue
-            a = float(np.degrees(np.arctan2(dy, dx)))
-            if a > 90:
-                a -= 180.0
-            elif a < -90:
-                a += 180.0
-            if abs(a) <= 45:
-                angs.append(a)
+            best_a, best_len = None, 0.0
+            for k in range(4):
+                p0, p1 = box[k], box[(k + 1) % 4]
+                dx, dy = float(p1[0] - p0[0]), float(p1[1] - p0[1])
+                ln = float(np.hypot(dx, dy))
+                if ln > best_len:
+                    best_len = ln
+                    if dx < 0.0:
+                        dx, dy = -dx, -dy
+                    best_a = float(np.degrees(np.arctan2(dy, dx)))
+            if best_a is None or abs(best_a) > 45:
+                continue
+            angs.append(best_a)
         if not angs:
             return 0.0
         return float(np.median(angs))
@@ -6300,12 +6434,27 @@ class MangaTranslator:
                     if len(latin) >= 3 and any(c in "AEIOUaeiou" for c in latin):
                         kind = "dialogue"
             poly = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.int32)
+            ang_ = self._estimate_angle_from_polys(line_polys)
+            rx1, ry1, rw_, rh_ = x1, y1, bw, bh
+            if line_polys and abs(ang_) >= 8.0:
+                # 🩹 v1.26 — متن کج: rect به کادر واقعی متن (شامل polyهای OCR)
+                # گسترش می‌یابد تا ماسک پاک‌سازی و رندر، تمامِ متنِ کج را بپوشانند
+                # (قبلاً کلمات بیرونِ کادر تشخیص باقی می‌ماندند).
+                try:
+                    pts = np.concatenate([np.asarray(p).reshape(-1, 2) for p in line_polys])
+                    px1, py1 = int(pts[:, 0].min()), int(pts[:, 1].min())
+                    px2, py2 = int(pts[:, 0].max()) + 1, int(pts[:, 1].max()) + 1
+                    rx1, ry1 = min(rx1, px1), min(ry1, py1)
+                    rw_ = max(x1 + bw, px2) - rx1
+                    rh_ = max(y1 + bh, py2) - ry1
+                except Exception:
+                    rx1, ry1, rw_, rh_ = x1, y1, bw, bh
             regions.append(TextRegion(
                 id=i,
                 boxes=[poly],
                 source_text=text,
-                rect=(x1, y1, bw, bh),
-                angle=self._estimate_angle_from_polys(line_polys),
+                rect=(rx1, ry1, rw_, rh_),
+                angle=ang_,
                 kind=kind,
                 ocr_polys=line_polys,
                 det_class=b.get("class_name", "") or "",
@@ -8380,14 +8529,33 @@ html, body { background: #0a0a0b; }
                     stroke_fill=stroke_rgb,
                 )
         else:
+            # 🩹 v1.26 — متن کج: به‌جای جاانداختن متن در bbox عمودی و بعد چرخاندن
+            # و آب‌کردنش (که متن را نصف‌اندازه می‌کرد — گزارش «چرخش درست نیست»)،
+            # ابعاد واقعی بلوک متن (راست‌شده) از bbox و زاویه حل می‌شود و متن
+            # اول در همان ابعاد جا می‌گیرد، بعد چرخانده می‌شود → اندازهٔ حروف
+            # دقیقاً هم‌اندازهٔ متن اصلی می‌ماند.
+            th = np.radians(abs(angle))
+            c_, s_ = float(np.cos(th)), float(np.sin(th))
+            denom = c_ * c_ - s_ * s_
+            fit_w, fit_h = w, h
+            if denom > 0.05:  # |θ| کمتر از حدود ۴۴ درجه — فرمول معتبر است
+                w_s = (w * c_ - h * s_) / denom
+                h_s = (h * c_ - w * s_) / denom
+                # جااندازی فقط در ابعاد منطقی؛ وگرنه رفتار قبلی
+                if 24 < w_s <= (w + h) * 0.95 and 10 < h_s <= (w + h) * 0.95:
+                    fit_w, fit_h = int(w_s), int(h_s)
+            font, lines, sw = self._wrap_and_fit(
+                draw, region.translated_text, fit_w, fit_h, style=style, max_size=max_font
+            )
+
             line_h = font.getbbox("آی", stroke_width=sw)[3] + 6
-            tmp_h = line_h * len(lines) + 30
+            tmp_h = line_h * len(lines) + 10
             tmp_w = 0
             for line in lines:
                 shaped = self._shape_farsi(line)
                 lw = draw.textbbox((0, 0), shaped, font=font, stroke_width=sw)[2]
                 tmp_w = max(tmp_w, lw)
-            tmp_w += 40
+            tmp_w += 14
 
             tmp = Image.new("RGBA", (tmp_w, tmp_h), (0, 0, 0, 0))
             tmp_draw = ImageDraw.Draw(tmp)
@@ -8407,10 +8575,11 @@ html, body { background: #0a0a0b; }
                 )
 
             rotated = tmp.rotate(-angle, expand=True, resample=Image.BICUBIC)
-            
-            
-            max_rw = max(24, int(w * 1.08))
-            max_rh = max(24, int(h * 1.08))
+
+            # فقط گیرِ ایمنی برای زوایای خیلی تند — دیگر «آب‌کردن» متن ممنوع
+            # (قبلاً ۱.۰۸ بود → متنِ کج تا ۶۰٪ کوچک می‌شد — باگ گزارش‌شده)
+            max_rw = max(24, int(w * 1.45))
+            max_rh = max(24, int(h * 1.45))
             rw0, rh0 = rotated.size
             scale_fit = min(1.0, max_rw / max(1, rw0), max_rh / max(1, rh0))
             if scale_fit < 0.99:

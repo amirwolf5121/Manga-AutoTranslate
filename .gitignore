@@ -54,3 +54,7 @@ android/app/src/main/python/typing_extensions.py
 android/app/src/main/python/typing_extensions-*.dist-info/
 android/app/src/main/python/bin/
 android/app/src/main/python/_vendor_tmp/
+
+# مدل‌های دانلودشدهٔ محلی برای تست (نباید کامیت شوند)
+det_models/
+rapidocr_models/

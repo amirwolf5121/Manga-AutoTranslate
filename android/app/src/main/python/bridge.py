@@ -653,6 +653,13 @@ def _run(job):
                     instruction_text=(str(p["instruction"]).strip() or None)
                     if p.get("instruction") else None,
                 )
+                # 🩹 v1.26 — «برش امن» گوشی: تا امروز نوارهای چسبانده تا سقف webp
+                # (~۱۶هزار px) می‌رفتند و روی گوشی سنگین بود (گزارش کاربر:
+                # «۱۴۰۰۰ خیلیه»). حالا روی اندروید هدف برش امن = ۴۰۰۰px —
+                # فقط وقتی مدل تشخیص حباب آماده است وگرنه برش امن خطا می‌دهد.
+                if (getattr(manga, "_on_android", lambda: False)()
+                        and getattr(tr, "det", None) is not None):
+                    tr.stitch_max_height = 4000
                 tr.batch_workers = _i("batchw", 3)  # مثل CLI: بعد از ساخت
                 # 🩹 v1.22: «use_lama» از تنظیمات اپ تا امروز همین‌جا دور ریخته
                 # می‌شد (docstring بود ولی هیچ‌وقت به موتور پاس نمی‌داد) → حتی با

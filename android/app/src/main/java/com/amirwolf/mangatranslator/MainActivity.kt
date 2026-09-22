@@ -303,7 +303,11 @@ class MainActivity : AppCompatActivity() {
                 val diskVer = verOf { if (dst.exists()) dst.readText() else "" }
                 val broken = dst.exists() && dst.length() < 1000L
                 val newer = verCmp(assetVer, diskVer) > 0
-                if (!dst.exists() || broken || newer) {
+                // 🩹 v1.26 — اگر APP_VER جا بیفتد (مثل v1.23→v1.25 که فیکس‌های
+                // لاما هرگز روی گوشی نرفتند) فایل قدیمی برای همیشه می‌ماند.
+                // حالا محتوای واقعی هم مقایسه می‌شود؛ هر تفاوتی = بازنویسی.
+                val differs = dst.exists() && !broken && md5Of(dst) != md5Of(assets, "engine/" + name)
+                if (!dst.exists() || broken || newer || differs) {
                     assets.open("engine/" + name).use { i ->
                         java.io.FileOutputStream(dst).use { o -> i.copyTo(o) }
                     }
@@ -319,6 +323,34 @@ class MainActivity : AppCompatActivity() {
     private fun verOf(src: () -> String): String = try {
         Regex("""APP_VER\s*=\s*"([^"]+)"""").find(src())?.groupValues?.get(1) ?: "0"
     } catch (e: Exception) { "0" }
+
+    /** MD5 فایل روی دیسک (استریمی — فایل موتور ~۳۰۰KB است). */
+    private fun md5Of(f: File): String = try {
+        val md = java.security.MessageDigest.getInstance("MD5")
+        f.inputStream().use { i ->
+            val b = ByteArray(65536)
+            while (true) {
+                val n = i.read(b)
+                if (n <= 0) break
+                md.update(b, 0, n)
+            }
+        }
+        md.digest().joinToString("") { "%02x".format(it) }
+    } catch (_: Exception) { "" }
+
+    /** MD5 یک asset داخل APK (استریمی). */
+    private fun md5Of(am: android.content.res.AssetManager, path: String): String = try {
+        val md = java.security.MessageDigest.getInstance("MD5")
+        am.open(path).use { i ->
+            val b = ByteArray(65536)
+            while (true) {
+                val n = i.read(b)
+                if (n <= 0) break
+                md.update(b, 0, n)
+            }
+        }
+        md.digest().joinToString("") { "%02x".format(it) }
+    } catch (_: Exception) { "" }
 
     private fun verCmp(a: String, b: String): Int {
         val pa = a.split(".").map { it.toIntOrNull() ?: 0 }.toMutableList()
@@ -1098,6 +1130,12 @@ class MainActivity : AppCompatActivity() {
             "<img src=\"i/$it\" loading=\"lazy\" decoding=\"async\" alt=\"\" draggable=\"false\">"
         }
         val html = assetHtml.replace("__TITLE__", title).replace("__IMGS__", imgs)
+
+        // 🩹 v1.26 — فراخوانیِ بارگذاری جا افتاده بود → WebView همیشه سیاه می‌ماند
+        // (گزارش کاربر: «نمایش می‌زنم هیچی سیاهه»). baseURL باید https باشد تا
+        // URLهای نسبی i/<N> به https://localhost/i/<N> بروند و
+        // shouldInterceptRequest همان‌جا فایل عکس را از دیسک سرو کند.
+        wv.loadDataWithBaseURL("https://localhost/", html, "text/html", "utf-8", null)
 
         wv.webViewClient = object : android.webkit.WebViewClient() {
             override fun shouldInterceptRequest(
