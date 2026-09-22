@@ -25,10 +25,9 @@ jobs:
           curl -fL --retry 3 -o models/japan_dict.txt         "$pd/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile/japan_dict.txt"
           curl -fL --retry 3 -o models/arabic_dict.txt        "$pd/PP-OCRv4/rec/arabic_PP-OCRv4_rec_mobile/arabic_dict.txt"
           hf="https://huggingface.co"
-          curl -fL --retry 3 -o models/detector-v4-s_int8.onnx "$hf/ogkalu/comic-text-and-bubble-detector/resolve/main/detector-v4-s_int8.onnx"
-          curl -fL --retry 3 -o models/detector.onnx           "$hf/ogkalu/comic-text-and-bubble-detector/resolve/main/detector.onnx"
-          curl -fL --retry 3 -o models/detector-v4.onnx        "$hf/ogkalu/comic-text-and-bubble-detector/resolve/main/detector-v4.onnx"
-          curl -fL --retry 3 -o models/lama_fp32.onnx          "$hf/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx"
+          curl -fL --retry 3 -o models/detector-v4-s_int8.onnx "$hf/ogkalu/comic-text-and-bubble-detector/resolve/main/detector-v4-s_int8.onnx" || true
+          curl -fL --retry 3 -o models/detector.onnx           "$hf/ogkalu/comic-text-and-bubble-detector/resolve/main/detector.onnx" || true
+          curl -fL --retry 3 -o models/lama_fp32.onnx          "$hf/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx" || true
           ls -la models
 
       - name: Ensure "models" release exists
