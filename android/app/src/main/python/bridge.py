@@ -23,6 +23,120 @@ import manga_app  # نسخه آپدیت‌شده از پوشه updates (sys.path
 STATE = {"job": None, "lock": threading.Lock()}
 _MF_CACHE = {"mf": None}
 
+# ---------- سازگاری WEBP با Pillow چاکوپی ----------
+# ویل Pillow بیلد چاکوپی کدک WEBP ندارد → «KeyError: 'WEBP'» هنگام ذخیره خروجی
+# (manga.py پیش‌فرض خروجی webp دارد). سه لایه دفاعی:
+#   ۱) فرمت خروجی: اگر webp ممکن نبود → jpg (_resolve_img_format)
+#   ۲) Image.save: هر جای کد webp بخواهد ذخیره کند → خودکار JPG
+#   ۳) Image.open: ورودی webp (لینک/گالری) با کدک خود اندروید (BitmapFactory)
+#      به PNG تبدیل می‌شود — بدون تغییر manga.py
+
+def _pil_webp_ok():
+    try:
+        from PIL import features
+        return bool(features.check("webp"))
+    except Exception:
+        return False
+
+
+def _webp_to_png_android(src):
+    """روی دستگاه: decode با کدک webp خود اندروید و ذخیره PNG. سطر/دسکتاپ: None."""
+    try:
+        from android.graphics import BitmapFactory, Bitmap
+        from java.io import FileOutputStream
+        bm = BitmapFactory.decodeFile(src)
+        if bm is None:
+            return None
+        dst = os.path.splitext(src)[0] + ".png"
+        out = FileOutputStream(dst)
+        ok = bm.compress(Bitmap.CompressFormat.PNG, 100, out)
+        out.flush()
+        out.close()
+        bm.recycle()
+        return dst if ok else None
+    except Exception:
+        return None
+
+
+def _is_webp_file(path):
+    try:
+        with open(path, "rb") as f:
+            head = f.read(12)
+        return head[:4] == b"RIFF" and head[8:12] == b"WEBP"
+    except Exception:
+        return False
+
+
+def install_webp_guards():
+    """اگر Pillow webp نداشت، گاردهای save/open را نصب می‌کند (ایدم‌پوتنت)."""
+    if _pil_webp_ok():
+        return
+    try:
+        from PIL import Image
+
+        if not getattr(Image.Image.save, "_manga_webp_guard", False):
+            _orig_save = Image.Image.save
+
+            def _safe_save(self, fp, format=None, **params):
+                try:
+                    return _orig_save(self, fp, format=format, **params)
+                except KeyError as e:
+                    if str(e).strip("'\"").upper() != "WEBP":
+                        raise
+                    path = str(fp)
+                    base, ext = os.path.splitext(path)
+                    new_path = (base + ".jpg") if ext.lower() == ".webp" else path
+                    print("[!] کدک WEBP در Pillow نیست → ذخیره به‌صورت JPG: %s" % new_path)
+                    try:
+                        q = int(params.get("quality", 90))
+                    except Exception:
+                        q = 90
+                    q = max(40, min(q, 100))
+                    return _orig_save(self, new_path, format="JPEG", quality=q, optimize=True)
+
+            _safe_save._manga_webp_guard = True
+            Image.Image.save = _safe_save
+
+        if not getattr(Image.open, "_manga_webp_guard", False):
+            _orig_open = Image.open
+
+            def _safe_open(fp, *a, **kw):
+                try:
+                    return _orig_open(fp, *a, **kw)
+                except Exception:
+                    try:
+                        path = str(getattr(fp, "name", fp))
+                    except Exception:
+                        path = ""
+                    if path and os.path.isfile(path) and _is_webp_file(path):
+                        png = _webp_to_png_android(path)
+                        if png:
+                            print("[!] ورودی WEBP با کدک اندروید به PNG تبدیل شد: %s" % png)
+                            return _orig_open(png, *a, **kw)
+                    raise
+
+            _safe_open._manga_webp_guard = True
+            Image.open = _safe_open
+    except Exception:
+        pass
+
+
+def _resolve_img_format(p):
+    """فرمت خروجی تصویر: تنظیم کاربر (img_format/format) یا webp در صورت
+    پشتیبانی Pillow؛ در غیر این صورت jpg (نزدیک‌ترین جایگزین به webp از
+    نظر حجم، کیفیت با img_quality کنترل می‌شود)."""
+    fmt = str(p.get("img_format") or p.get("format") or "").strip().lstrip(".").lower()
+    if fmt == "jpeg":
+        fmt = "jpg"
+    if fmt not in ("webp", "jpg", "png"):
+        fmt = "webp" if _pil_webp_ok() else "jpg"
+    elif fmt == "webp" and not _pil_webp_ok():
+        fmt = "jpg"
+    return fmt
+
+
+install_webp_guards()
+
 # ---------- اصلاح پسوند ورودی (فایل pick_شدهٔ گالری اندروید) ----------
 # گالری اندروید اغلب نام بدون پسوند می‌دهد (مثل image:1000223081) و موتور
 # ورودی بی‌پسوند را با «نوع ورودی پشتیبانی نمی‌شه» رد می‌کند. اینجا با
@@ -51,7 +165,10 @@ def _fix_input_ext(path):
             return path
         ext = os.path.splitext(path)[1].lower()
         if ext in _ACCEPTED_EXTS:
-            return path
+            if ext != ".webp" or _pil_webp_ok():
+                return path
+            png = _webp_to_png_android(path)
+            return png if png else path
         with open(path, "rb") as f:
             head = f.read(16)
         fixed = ""
@@ -61,6 +178,10 @@ def _fix_input_ext(path):
                 break
         if not fixed and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
             fixed = ".webp"
+            if not _pil_webp_ok():
+                png = _webp_to_png_android(path)
+                if png:
+                    return png
         if not fixed:
             try:
                 from PIL import Image
@@ -386,6 +507,7 @@ def _run(job):
                 request_delay=_f("reqdelay", 0.0),
                 translation_temperature=_f("temp", 0.85),
                 img_quality=_i("quality", 92),
+                img_format=_resolve_img_format(p),
                 style_fonts=bool(active),
                 active_tones=active or None,
                 instruction_text=(str(p["instruction"]).strip() or None)
