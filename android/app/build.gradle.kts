@@ -13,7 +13,7 @@ android {
         minSdk = 24
         targetSdk = 34
         versionCode = 1
-        versionName = "1.10"
+        versionName = "1.11"
 
         ndk {
             // همه معماری‌ها: گوشی جدید (arm64)، گوشی قدیمی ۳۲بیت (v7a)،

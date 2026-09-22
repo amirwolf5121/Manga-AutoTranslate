@@ -10,6 +10,11 @@ import numpy as np
 
 __version__ = "1.20.0-android-shim"
 
+
+def preload_dlls(*a, **k):
+    """سازگاری API — اندروید نیازی به preload ندارد."""
+    pass
+
 try:
     from java import jclass, jarray
     _FloatBuffer = jclass("java.nio.FloatBuffer")
@@ -27,6 +32,13 @@ try:
 except Exception as _e:
     _OK = False
     _IMPORT_ERR = _e
+
+
+class ExecutionMode:
+    """سازگاری API — اندروید always sequential."""
+
+    ORT_SEQUENTIAL = 0
+    ORT_PARALLEL = 1
 
 
 class GraphOptimizationLevel:
