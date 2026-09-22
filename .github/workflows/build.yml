@@ -34,6 +34,17 @@ jobs:
       - name: local.properties
         run: echo "sdk.dir=$ANDROID_HOME" > android/local.properties
 
+      # از v1.24 بسته‌های pure-python (openai/pydantic/rapidocr/huggingface_hub/
+      # httpx و … ~۹۵۰ فایل) از گیت حذف شده‌اند تا آپلود/کلون ریپو سبک باشد.
+      # این مرحله همان‌ها را با نسخهٔ پین‌شده دانلود و داخل
+      # android/app/src/main/python می‌ریزد تا چاکوپی داخل APK ببندد.
+      # پین‌ها: android/scripts/fetch_vendor.py (بیلد محلی هم همین را اجرا کن)
+      - name: Fetch vendored Python packages
+        run: |
+          python -m pip install --upgrade pip -q
+          python android/scripts/fetch_vendor.py --target android/app/src/main/python
+
+
       # سه خروجی جدا: arm64 (سبک، برای گوشی‌های جدید)، armv7a (گوشی‌های قدیمی ۳۲بیت)
       # و universal (همه معماری‌ها). daemon را روشن می‌گذاریم تا بیلد دوم و سوم
       # با حافظه گرم سریع‌تر شوند.

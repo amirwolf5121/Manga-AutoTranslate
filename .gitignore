@@ -9,3 +9,47 @@ web_out.log
 mf_test.json
 android/app/src/main/assets/
 android/.kotlin/
+
+# ---- بسته‌های vendored (از v1.24 در گیت نیستند — build.yml خودش با
+# android/scripts/fetch_vendor.py دانلود و در همین مسیر می‌ریزد.
+# برای بیلد محلی: python android/scripts/fetch_vendor.py ) ----
+android/app/src/main/python/anyio/
+android/app/src/main/python/anyio-*.dist-info/
+android/app/src/main/python/beautifulsoup4-*.dist-info/
+android/app/src/main/python/bs4/
+android/app/src/main/python/certifi/
+android/app/src/main/python/certifi-*.dist-info/
+android/app/src/main/python/distro/
+android/app/src/main/python/distro-*.dist-info/
+android/app/src/main/python/exceptiongroup/
+android/app/src/main/python/exceptiongroup-*.dist-info/
+android/app/src/main/python/filelock/
+android/app/src/main/python/filelock-*.dist-info/
+android/app/src/main/python/fsspec/
+android/app/src/main/python/fsspec-*.dist-info/
+android/app/src/main/python/h11/
+android/app/src/main/python/h11-*.dist-info/
+android/app/src/main/python/httpcore/
+android/app/src/main/python/httpcore-*.dist-info/
+android/app/src/main/python/httpx/
+android/app/src/main/python/httpx-*.dist-info/
+android/app/src/main/python/huggingface_hub/
+android/app/src/main/python/huggingface_hub-*.dist-info/
+android/app/src/main/python/idna/
+android/app/src/main/python/idna-*.dist-info/
+android/app/src/main/python/openai/
+android/app/src/main/python/openai-*.dist-info/
+android/app/src/main/python/packaging/
+android/app/src/main/python/packaging-*.dist-info/
+android/app/src/main/python/pydantic/
+android/app/src/main/python/pydantic-*.dist-info/
+android/app/src/main/python/rapidocr/
+android/app/src/main/python/rapidocr-*.dist-info/
+android/app/src/main/python/sniffio/
+android/app/src/main/python/sniffio-*.dist-info/
+android/app/src/main/python/soupsieve/
+android/app/src/main/python/soupsieve-*.dist-info/
+android/app/src/main/python/typing_extensions.py
+android/app/src/main/python/typing_extensions-*.dist-info/
+android/app/src/main/python/bin/
+android/app/src/main/python/_vendor_tmp/
