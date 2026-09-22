@@ -1237,31 +1237,66 @@ class MainActivity : AppCompatActivity() {
 
         /** ImageView صفحه — همهٔ لمس‌ها را می‌گیرد و خودش توزیع می‌کند:
          *  اسکرول عمودی → لیست، پن افقی در زوم → HorizontalScrollView،
-         *  پینچ/دبل‌تپ → تغییر zoom (اندازهٔ ویو). */
+         *  پینچ/دبل‌تپ → تغییر zoom (اندازهٔ ویو).
+         *  ⚠ فیکس v1.23: تا v1.22 «requestDisallowInterceptTouchEvent» فقط وقتی
+         *  صدا زده می‌شد که ScaleGestureDetector کامل شروع شده بود؛ RecyclerView
+         *  خیلی زودتر (بعد از touch-slop) لمس را می‌دزدید → پینچ عملاً کار
+         *  نمی‌کرد و فقط لیست اسکرول می‌شد. حالا از همان DOWN لمس قفل می‌شود.
+         *  ضمناً زوم حالا «لنگرشده روی نقطهٔ لمس» است — قبلاً از بالا-چپ بزرگ
+         *  می‌شد و تصویر انگار به پایین می‌پرید؛ با دبل‌تپ دوم برمی‌گشت. */
         inner class PageView(ctx: android.content.Context) :
             androidx.appcompat.widget.AppCompatImageView(ctx) {
 
             var onTap: (() -> Unit)? = null
 
+            private val hsv: android.widget.HorizontalScrollView
+                get() = itemView as android.widget.HorizontalScrollView
+
+            /** بعد از تغییر zoom، اسکرول لیست/پن افقی را جابه‌جا می‌کند تا
+             *  نقطهٔ (fx,fy)ِ لمس زیر انگشت ثابت بماند (لنگر زوم). */
+            private fun anchorScroll(fx: Float, fy: Float, z0: Float, z1: Float) {
+                if (z0 <= 0f || z1 <= 0f || z1 == z0) return
+                val k = z1 / z0
+                val dy = (fy * (k - 1f)).toInt()
+                val dx = (fx * (k - 1f)).toInt()
+                if (dy != 0) list.scrollBy(0, dy)
+                if (dx != 0) hsv.scrollBy(dx, 0)
+            }
+
             private val scaleDet = android.view.ScaleGestureDetector(ctx,
                 object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                    override fun onScaleBegin(
+                        d: android.view.ScaleGestureDetector,
+                    ): Boolean {
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                        return true
+                    }
+
                     override fun onScale(d: android.view.ScaleGestureDetector): Boolean {
+                        val before = zoom
                         zoom = (zoom * d.scaleFactor).coerceIn(1f, 4f)
-                        applySize()
+                        if (zoom != before) {
+                            applySize()
+                            anchorScroll(d.focusX, d.focusY, before, zoom)
+                        }
                         return true
                     }
                 })
 
             private val gest = android.view.GestureDetector(ctx,
                 object : android.view.GestureDetector.SimpleOnGestureListener() {
-                    override fun onDown(e: android.view.MotionEvent): Boolean = true
+                    override fun onDown(e: android.view.MotionEvent): Boolean {
+                        // از همان اول لمس: RecyclerView/HSV اجازهٔ دزدیدن ندارند
+                        // (ریشهٔ «پینچ کار نمی‌کند و فقط می‌پرید پایین»)
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                        return true
+                    }
 
                     override fun onScroll(e1: android.view.MotionEvent?,
                                           e2: android.view.MotionEvent,
                                           dx: Float, dy: Float): Boolean {
                         // افقی: فقط وقتی زوم‌شده محدودهٔ پن وجود دارد
-                        (itemView as android.widget.HorizontalScrollView)
-                            .scrollBy((-dx).toInt(), 0)
+                        hsv.scrollBy((-dx).toInt(), 0)
                         // عمودی: همیشه لیست جلو می‌رود (خواندن از بالا به پایین)
                         list.scrollBy(0, dy.toInt())
                         return true
@@ -1272,8 +1307,11 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
-                        zoom = if (zoom > 1.2f) 1f else 2.5f
+                        val before = zoom
+                        zoom = if (before > 1.2f) 1f else 2.5f
                         applySize()
+                        // لنگر روی همان نقطه‌ای که دبل‌تپ شده — نه گوشهٔ بالا
+                        anchorScroll(e.x, e.y, before, zoom)
                         return true
                     }
 
@@ -1291,11 +1329,12 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+                if (e.actionMasked == android.view.MotionEvent.ACTION_UP ||
+                    e.actionMasked == android.view.MotionEvent.ACTION_CANCEL) {
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                }
                 scaleDet.onTouchEvent(e)
                 if (!scaleDet.isInProgress) gest.onTouchEvent(e)
-                if (scaleDet.isInProgress) {
-                    parent?.requestDisallowInterceptTouchEvent(true)
-                }
                 return true
             }
         }

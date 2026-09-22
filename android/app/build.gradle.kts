@@ -15,13 +15,16 @@ android {
         // android_24 ساخته شده (android_21 فقط cp38 دارد) → پایین‌تر از این ممکن نیست
         minSdk = 24
         targetSdk = 34
-        versionCode = 9
-        versionName = "1.22"
+        versionCode = 10
+        versionName = "1.23"
 
         // معماری‌ها از بیرون قابل انتخاب: -PappAbis=arm64-v8a (سبک) یا همه برای universal
         // پکیج‌های پایتونی هر معماری ~۱۵-۲۰MB است → تک‌ABI، حجم APK را نصف می‌کند
+        // v1.23: پیش‌فرض universal فقط ARM است (گوشی‌ها همه ARM اند) — x86/x86_64
+        // فقط برای شبیه‌ساز بود و ~۷۰MB به universal اضافه می‌کرد («حجمش کم شه»).
+        // اگر روزی خواستی: -PappAbis=arm64-v8a,armeabi-v7a,x86,x86_64
         val buildAbis = ((findProperty("appAbis") as String?)
-            ?: "arm64-v8a,armeabi-v7a,x86,x86_64")
+            ?: "arm64-v8a,armeabi-v7a")
             .split(",").map { it.trim() }.filter { it.isNotEmpty() }
         ndk {
             abiFilters += buildAbis

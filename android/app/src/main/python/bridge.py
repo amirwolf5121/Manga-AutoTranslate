@@ -673,16 +673,22 @@ def _run(job):
             _detach_log_handlers(handlers)
 
         # خروجی‌ها: فایل نهایی + صفحات (از cache خروجی برای نمایش)
-        # ⚠ فیکس «دو عکس» (v1.22): قبلاً کل cache walk می‌شد و پوشه‌های
-        # src/normalized/stitched (کپیِ صفحهٔ ورودی قبل ترجمه) هم به‌عنوان
-        # خروجی جمع می‌شد → کنار عکس ترجمه‌شده، عکس اصلی هم نمایش داده می‌شد.
-        # حالا فقط زیرپوشه‌های out*/ (خروجی) و debug*/ (دیباگ).
+        # ⚠ فیکس «دو عکس» (v1.23): چک قبلی روی «تمام قطعات مسیر» بود و چون
+        # پوشهٔ کاری خود اپ هم «out» نام دارد (files/work/out)، is_out همیشه
+        # True می‌شد → src/normalized/stitched (عکسِ اصلیِ ورودی، قبل از ترجمه)
+        # هم به‌عنوان خروجی جمع می‌شد → کاربر هم عکس اصلی می‌دید هم ترجمه‌شده.
+        # حالا فقط «نام مستقیم پوشهٔ والد» چک می‌شود (out*/ خروجی، debug*/ دیباگ)
+        # و پوشه‌های شامل کپی اصلی (src/normalized/stitched) صریحاً رد می‌شوند.
+        _ORIG_DIRS = ("src", "normalized", "stitched")
         imgs, dbg = [], []
         cache = job["out_file_path"] + ".cache"
         for root, _d, files in os.walk(cache):
-            parts = [p.lower() for p in root.split(os.sep)]
-            is_dbg = any(p.startswith("debug") for p in parts)
-            is_out = any(p == "out" or p.startswith("out_") for p in parts)
+            dname = os.path.basename(os.path.normpath(root)).lower()
+            if any("/" + o + "/" in root.lower().replace(os.sep, "/") + "/"
+                   for o in _ORIG_DIRS):
+                continue
+            is_dbg = dname.startswith("debug")
+            is_out = dname == "out" or dname.startswith("out_")
             if not is_out and not is_dbg:
                 continue
             for f in sorted(files):
@@ -702,7 +708,21 @@ def _run(job):
         imgs.sort(key=_natkey)
         dbg.sort(key=_natkey)
         if not imgs:
-            for root, _d, files in os.walk(job["out"]):
+            # فال‌بک: فقط فایل‌های تصویری بیرون از cache (مثل خود out) —
+            # داخل *.cache فقط زیرپوشهٔ out*/debug* معتبر است نه src/normalized
+            for root, dirs_, files in os.walk(job["out"]):
+                rel = root.lower().replace(os.sep, "/")
+                segs = [s for s in rel.split("/") if s]
+                dname = os.path.basename(os.path.normpath(root)).lower()
+                in_cache = any(s.endswith(".cache") for s in segs)
+                if in_cache and not (
+                        dname == "out" or dname.startswith("out_")
+                        or dname.startswith("debug")):
+                    dirs_[:] = []
+                    continue
+                if any("/" + o + "/" in rel + "/" for o in _ORIG_DIRS):
+                    dirs_[:] = []
+                    continue
                 for f in sorted(files):
                     lp = os.path.join(root, f)
                     if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):

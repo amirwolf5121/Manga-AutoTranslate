@@ -2,6 +2,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+# نسخهٔ موتور — Kotlin برای به‌روزرسانی خودکار موتور، این را با نسخهٔ روی دیسد
+# مقایسه می‌کند (باید در ۸KB اول فایل بماند و در هر ریلیس بالا برود).
+APP_VER = "1.23"
+
 DEFAULT_SYSTEM_INSTRUCTION_STYLE = """
 تو مترجم مانگا و مانهوا به فارسی گفتاری ایرانی هستی. کار تو دوبله است، نه ترجمه لغت‌به‌لغت.
 معیار: جمله باید طوری باشد که یک ایرانی همان لحظه بلند می‌گوید. معنا کامل، ولی جمله را از نو به فارسی بگو؛ ساختار انگلیسی را کپی نکن. اگر ترجمه‌ات بوی «متن نوشته‌شده» داد، خودت دوباره بگویش.
@@ -139,6 +143,15 @@ def _ort_has_cuda() -> bool:
         return False
 
 
+# چاکوپی فقط روی اندروید ماژول java را دارد — چک سبک، قبل از هر مصرفی
+# (خود _on_android پایین‌تر تعریف می‌شود و اینجا هنوز وجود ندارد)
+try:
+    import java  # noqa: F401
+    _IS_ANDROID = True
+except Exception:
+    _IS_ANDROID = False
+
+
 def _ensure_all_dependencies() -> None:
     print("[*] بررسی وابستگی‌ها ...")
 
@@ -195,7 +208,9 @@ def _ensure_all_dependencies() -> None:
     if not _can_import("tqdm"):
         misc.append("tqdm")
     if not (_can_import("pymupdf") or _can_import("fitz")):
-        misc.append("pymupdf")
+        # v1.23: pymupdf روی اندروید ویل ندارد → pip می‌میرد؛ فقط PC
+        if not _IS_ANDROID:
+            misc.append("pymupdf")
     if misc:
         _pip_install(*misc)
 
@@ -205,16 +220,21 @@ def _ensure_all_dependencies() -> None:
             if not _can_import("rapidocr_onnxruntime"):
                 _pip_install("rapidocr-onnxruntime")
 
-    
-    if not _can_import("google.genai") and not _can_import("google.generativeai"):
-        _pip_install("google-genai")
-    if not _can_import("openai"):
-        _pip_install("openai")
+    # v1.23: google-genai / pymupdf / paddleocr هر سه روی اندروید محکوم به شکست‌اند
+    # (pydantic-core و paddle و mupdf ویل اندرویدی ندارند → pip وسط نصب می‌میرد
+    # و اجرای اول اپ ساعت‌ها معلق می‌ماند — گزارش کاربر). openai از قبل همراه APK
+    # هست و gemini-provider روی گوشی خودکار به مسیر OpenAI‌سازگار برمی‌گردد؛
+    # روی PC همه‌چیز مثل قبل نصب می‌شود.
+    if not _IS_ANDROID:
+        if not _can_import("google.genai") and not _can_import("google.generativeai"):
+            _pip_install("google-genai")
+        if not _can_import("paddleocr"):
+            print("[*] تلاش برای نصب PaddleOCR (اختیاری، دقت بالاتر) ...")
+            _pip_install("paddleocr")
 
     
-    if not _can_import("paddleocr"):
-        print("[*] تلاش برای نصب PaddleOCR (اختیاری، دقت بالاتر) ...")
-        _pip_install("paddleocr")
+    if not _can_import("openai"):
+        _pip_install("openai")
         
 
     import platform as _platform
@@ -741,18 +761,31 @@ class LamaMangaONNX:
         if dst.is_file() and dst.stat().st_size > 1_000_000:
             print(f"[*] مدل LaMa-Manga از کش: {dst}")
             return str(dst)
-        print("[*] دانلود مدل LaMa-Manga ONNX (~198MB، فقط بار اول) ...")
-        import requests
-        with requests.get(cls.URL, stream=True, timeout=600) as r:
-            r.raise_for_status()
-            tmp = dst.with_suffix(".tmp")
-            with open(tmp, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1 << 20):
-                    if chunk:
-                        f.write(chunk)
-            tmp.replace(dst)
-        print(f"[+] مدل LaMa-Manga ذخیره شد: {dst}")
-        return str(dst)
+        # v1.23: اول mirror گیت‌هاب (در ایران در دسترس — huggingface.co قطع است
+        # و تا امروز دانلود LaMa روی گوشی کاربران ایرانی گیر می‌کرد)؛ بعد HF.
+        # درصد زنده هم دارد (درخواست کاربر: «یک درصدی نشون بده»).
+        print("[*] دانلود مدل LaMa-Manga ONNX (~۱۹۸MB، فقط بار اول) ...")
+        urls = (
+            _RAPIDOCR_MIRROR + "lama_fp32.onnx",
+            cls.URL,
+        )
+        last = None
+        for url in urls:
+            try:
+                host = url.split("/")[2]
+                print(f"    ⬇ از {host} ...")
+                _dl_to(url, str(dst), name="lama_fp32.onnx")
+                print(f"[+] مدل LaMa-Manga ذخیره شد: {dst}")
+                return str(dst)
+            except Exception as e:
+                last = e
+                print(f"    [!] دانلود از {url.split('/')[2]} نشد: {e}")
+                try:
+                    if os.path.isfile(str(dst) + ".part"):
+                        os.remove(str(dst) + ".part")
+                except Exception:
+                    pass
+        raise RuntimeError(f"دانلود مدل LaMa ناموفق: {last}")
 
     def __call__(self, image, mask):
         if isinstance(image, np.ndarray):
@@ -827,27 +860,44 @@ class RTDetrV2ONNXDetector:
         if not model_path or not os.path.isfile(model_path) or os.path.getsize(model_path) < 1000:
             model_path = None
             last_err = None
+
+            def _hf_with_timeout(fname: str):
+                """hf_hub_download با سقف زمانی — huggingface.co در ایران قطع است
+                و بدون سقف، نصب مدل برای همیشه معلق می‌ماند (گزارش کاربر:
+                «detector-v4-s_int8.onnx دانلود نمیکنه»)."""
+                if hf_hub_download is None:
+                    raise RuntimeError("huggingface_hub لازم است")
+                import concurrent.futures as _cf
+                with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+                    fut = _ex.submit(
+                        hf_hub_download, repo_id=self.DET_REPO,
+                        filename=fname, cache_dir=cache_dir,
+                    )
+                    try:
+                        return fut.result(timeout=240)
+                    except _cf.TimeoutError:
+                        raise RuntimeError("huggingface: تایم‌اوت ۲۴۰s (در ایران قطع است)") from None
+
             for fname in self.DET_FILES:
                 try:
+                    # ۱) mirror گیت‌هاب (در ایران در دسترس) — با درصد زنده
                     _m = _mirror_model(fname)
                     if _m:
                         model_path = _m
                         break
+                    # ۲) huggingface_hub با سقف زمانی
                     print(f"[*] دانلود مدل RT-DETR ONNX از {self.DET_REPO}/{fname} ...")
-                    if hf_hub_download is None:
-                        raise RuntimeError("huggingface_hub لازم است")
-                    cand = hf_hub_download(
-                        repo_id=self.DET_REPO, filename=fname, cache_dir=cache_dir,
-                    )
+                    cand = _hf_with_timeout(fname)
                     if cand and os.path.isfile(cand) and os.path.getsize(cand) > 1000:
                         model_path = cand
                         break
                     print(f"    [!] {fname} خالی/ناقص بود → دانلود مستقیم...")
-                    import urllib.request
+                    # ۳) مستقیم از HF — با درصد و تایم‌اوت (v1.23)
                     url = f"https://huggingface.co/{self.DET_REPO}/resolve/main/{fname}"
-                    dest = os.path.join(cache_dir or os.path.expanduser("~/.cache"), fname)
+                    dest = os.path.join(
+                        cache_dir or _model_cache_dir("det_models"), fname)
                     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
-                    urllib.request.urlretrieve(url, dest)
+                    _dl_to(url, dest, name=fname)
                     if os.path.isfile(dest) and os.path.getsize(dest) > 1000:
                         model_path = dest
                         break
@@ -1081,13 +1131,54 @@ _RAPIDOCR_FILES = {
 }
 
 
-def _dl_to(url, dst):
+def _fmt_mb(n: float) -> str:
+    return f"{n / (1024 * 1024):.1f}MB"
+
+
+def _dl_progress(name: str, done: int, total: int, _last: list = [0.0, 0]) -> None:
+    """یک خط progress زنده: «⬇ file.onnx: 42% (4.5/10.6MB)» — \r یعنی جایگزین
+    خط قبلی (لایهٔ اپ همین تیک‌ها را در همان خط به‌روز می‌کند)."""
+    import time as _t
+    now = _t.time()
+    if total > 0:
+        pct = min(100, int(done * 100 / total))
+        # throttle: حداکثر هر ۰.۸ ثانیه یا هر ۵٪ یا در ۱۰۰٪ چاپ کن
+        if now - _last[0] < 0.8 and pct - _last[1] < 5 and pct < 100:
+            return
+        _last[0], _last[1] = now, pct
+        print(f"\r    ⬇ {name}: {pct}% ({_fmt_mb(done)}/{_fmt_mb(total)})"
+              + (" " * 4), end="", flush=True)
+    else:
+        if now - _last[0] < 1.5:
+            return
+        _last[0] = now
+        print(f"\r    ⬇ {name}: {_fmt_mb(done)}", end="", flush=True)
+
+
+def _dl_to(url, dst, name: str = ""):
+    """دانلود با گزارش درصد زنده + تایم‌اوت + اعتبارسنجی حجم (v1.23)."""
+    import time as _t
     import urllib.request
+    if not name:
+        name = os.path.basename(dst)
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    t0 = _t.time()
     with urllib.request.urlopen(req, timeout=900) as r, \
             open(dst + ".part", "wb") as f:
-        shutil.copyfileobj(r, f)
+        total = int(r.headers.get("Content-Length") or 0)
+        done = 0
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+            done += len(chunk)
+            _dl_progress(name, done, total)
+    if total and done < total:
+        raise RuntimeError(f"ناقص: {done}/{total} بایت")
     if os.path.getsize(dst + ".part") > 1000:
+        dt = _t.time() - t0
+        print(f"\r    ✔ {name}: {_fmt_mb(done)} در {dt:.0f}s" + " " * 8)
         os.replace(dst + ".part", dst)
         return dst
     raise RuntimeError("فایل ناقص")
@@ -1122,9 +1213,8 @@ def _mirror_model(fname):
 
 
 def _ensure_rapidocr_models(mdir, files=None):
-    """فایل‌های مدل غایب را از mirror (فال‌بک modelscope) دانلود می‌کند."""
-    import shutil
-    import urllib.request
+    """فایل‌های مدل غایب را از mirror (فال‌بک modelscope) دانلود می‌کند.
+    v1.23: از _dl_to با درصد زنده استفاده می‌کند (درخواست کاربر)."""
     wanted = files or list(_RAPIDOCR_FILES)
     for fname in wanted:
         dst = os.path.join(mdir, fname)
@@ -1136,15 +1226,9 @@ def _ensure_rapidocr_models(mdir, files=None):
                 continue
             try:
                 print(f"  ⬇ {fname} ...")
-                req = urllib.request.Request(
-                    url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=300) as r,                         open(dst + ".part", "wb") as f:
-                    shutil.copyfileobj(r, f)
-                if os.path.getsize(dst + ".part") > 100_000:
-                    os.replace(dst + ".part", dst)
-                    print(f"  ✔ {fname}")
-                    done = True
-                    break
+                _dl_to(url, dst, name=fname)
+                done = True
+                break
             except Exception as e:
                 host = url.split("/")[2] if url else "?"
                 print(f"  [!] {fname} از {host} نشد: {e}")
@@ -1643,9 +1727,13 @@ def uncensor_swears(text: str) -> str:
 
 class MangaTranslator:
     _LAMA_MIN_VRAM_GB = 3.5
-    # آستانهٔ لاما روی گوشی (v1.22): زیر ۵GB رم کل، ORT مدل ۱۹۸MB را نمی‌کشد
-    _ANDROID_LAMA_MIN_TOTAL_GB = 5.0
-    _ANDROID_LAMA_MIN_AVAIL_GB = 2.0
+    # آستانهٔ لاما روی گوشی (v1.23): رم کل ≥ ۴GB → اجازهٔ تلاش (SD870/۶GB مثل
+    # Poco F4 حدود ۵.۵GB گزارش می‌کند و تا امروز زیر سقف ۵GBِ سخت‌گیرانه یا
+    # شرط «۲GB رم آزاد» (که وسط کار اپ معمولاً برقرار نیست) رد می‌شد.
+    # رم آزاد فقط «هشدار» است؛ اگر واقعاً OOM شود فال‌بک لاما→OpenCV خودکار هست.
+    _ANDROID_LAMA_MIN_TOTAL_GB = 4.0
+    _ANDROID_LAMA_MIN_AVAIL_GB = 1.0  # فقط زیر این واقعاً این‌بار رد می‌شود
+    _ANDROID_LAMA_WARN_AVAIL_GB = 1.5  # بالای این ولی کم → هشدار، اجرا می‌شود
 
     @staticmethod
     def _detect_paddle_gpu() -> bool:
@@ -2092,9 +2180,10 @@ class MangaTranslator:
         
         
         if self._lama is None and self.use_lama:
-            # 🩹 تشخیص خودکار توان گوشی (v1.22): مدل ~۱۹۸MB + حافظهٔ کاری ORT
-            # روی گوشی کم‌رم → کشتن اپ توسط سیستم (LMK). زیر آستانه‌ها لاما اصلاً
-            # تلاش نکن و با پیام روشن به OpenCV برگرد.
+            # 🩹 تشخیص خودکار توان گوشی (v1.23): مدل ~۱۹۸MB + حافظهٔ کاری ORT.
+            # زیر حداقل رم کل → اصلاً تلاش نکن؛ رم آزادِ کم فقط هشدار (چون
+            # MemAvailable وسط کار همیشه پایین است و تا v1.22 لاما روی گوشی‌های
+            # سالم مثل SD870/۶GB هم رد می‌شد — گزارش واقعی کاربر).
             if _on_android():
                 total = self._total_ram_gb()
                 avail = self._available_ram_gb()
@@ -2106,13 +2195,16 @@ class MangaTranslator:
                     self._inpainter_name = "OpenCV"
                     return None
                 if avail and avail < self._ANDROID_LAMA_MIN_AVAIL_GB:
-                    print(f"[!] الان رم آزاد گوشی کم است ({avail:.1f}GB) — LaMa این بار "
+                    print(f"[!] الان رم آزاد گوشی خیلی کم است ({avail:.1f}GB) — LaMa این بار "
                           f"اجرا نشد → OpenCV. اپ‌های بیکار را ببند و دوباره امتحان کن.")
                     self.use_lama = False
                     self._inpainter_name = "OpenCV"
                     return None
                 print(f"[*] رم گوشی: کل {total:.1f}GB / آزاد {avail:.1f}GB → "
                       f"LaMa-Manga روی CPU اجرا می‌شود (کندتر ولی تمیزتر از OpenCV).")
+                if avail and avail < self._ANDROID_LAMA_WARN_AVAIL_GB:
+                    print(f"    [!] رم آزاد کمی پایین است؛ اگر وسط کار کرش شد، "
+                          f"اپ‌های بیکار را ببند یا چند لحظه بعد امتحان کن.")
             try:
                 print("    [*] بارگذاری LaMa-Manga ONNX (fine-tune مانگا) ...")
                 self._lama = LamaMangaONNX(
