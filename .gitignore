@@ -7,3 +7,5 @@ __pycache__/
 *.pyc
 web_out.log
 mf_test.json
+android/app/src/main/assets/
+android/.kotlin/

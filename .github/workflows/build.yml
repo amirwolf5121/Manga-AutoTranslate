@@ -8,13 +8,14 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
-      contents: write  # برای چسباندن APK به Release
+      contents: write  # برای انتشار فایل‌های موتور و چسباندن APK به Release
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Python 3.10 (buildPython چاکوپی)
+      - name: Python 3.10 (buildPython چاکوپی — باید با پایتون داخل اپ هم‌نسخه باشد)
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
@@ -30,49 +31,62 @@ jobs:
         with:
           gradle-version: "8.10.2"
 
-      - name: Build APK
+      - name: local.properties
+        run: echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+
+      # سه خروجی جدا: arm64 (سبک، برای گوشی‌های جدید)، armv7a (گوشی‌های قدیمی ۳۲بیت)
+      # و universal (همه معماری‌ها). daemon را روشن می‌گذاریم تا بیلد دوم و سوم
+      # با حافظه گرم سریع‌تر شوند.
+      - name: Build arm64-v8a
+        working-directory: android
         run: |
-          cd android
-          echo "sdk.dir=$ANDROID_HOME" > local.properties
-          gradle :app:assembleDebug --no-daemon \
+          gradle :app:assembleDebug \
             -PchaquopyBuildPython="$(command -v python)" \
-            -Dorg.gradle.jvmargs=-Xmx3g
+            -PappAbis=arm64-v8a --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk \
+            "$GITHUB_WORKSPACE/MangaTranslator-${{ github.ref_name }}-arm64.apk"
 
-      - name: Rename APKs (per-ABI + universal)
+      - name: Build armeabi-v7a
+        working-directory: android
         run: |
-          cd android/app/build/outputs/apk/debug
-          for f in app-*-debug.apk app-debug.apk; do
-            [ -f "$f" ] || continue
-            case "$f" in
-              *arm64-v8a*) abi="arm64" ;;
-              *armeabi-v7a*) abi="armeabi" ;;
-              *x86_64*) abi="x86_64" ;;
-              *x86-*) abi="x86" ;;
-              *universal*) abi="universal" ;;
-              *) abi="all" ;;
-            esac
-            cp "$f" "manga-translator-${{ github.ref_name }}-$abi.apk"
-          done
-          cp manga-translator-*.apk "$GITHUB_WORKSPACE/"
-          ls -la "$GITHUB_WORKSPACE"/manga-translator-*.apk
+          gradle :app:assembleDebug \
+            -PchaquopyBuildPython="$(command -v python)" \
+            -PappAbis=armeabi-v7a --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk \
+            "$GITHUB_WORKSPACE/MangaTranslator-${{ github.ref_name }}-armv7a.apk"
 
-      - name: Upload artifact (هر بیلد)
+      - name: Build universal (همه معماری‌ها)
+        working-directory: android
+        run: |
+          gradle :app:assembleDebug \
+            -PchaquopyBuildPython="$(command -v python)" --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk \
+            "$GITHUB_WORKSPACE/MangaTranslator-${{ github.ref_name }}-universal.apk"
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: manga-translator-apk
-          path: manga-translator-*.apk
+          path: MangaTranslator-*.apk
+          if-no-files-found: error
 
-      - name: Publish engine files (mirror آپدیت درون‌اپ — raw در ایران بلاک است)
+      # آینه آپدیت درون‌اپ — چون raw.githubusercontent.com در ایران بلاک است،
+      # اپ فایل‌های موتور را از همین Release می‌گیرد
+      - name: Publish engine files (mirror آپدیت درون‌اپ)
         run: |
           cp android/app/src/main/python/bridge.py .
           cp android/app/src/main/python/extract_ui.py .
-          gh release view files -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||             gh release create files -R "$GITHUB_REPOSITORY"               --title "Engine files (in-app update mirror)"               --notes "manga.py / manga_app.py / bridge.py / extract_ui.py برای آپدیت خودکار اپ"
-          gh release upload files manga.py manga_app.py bridge.py extract_ui.py             -R "$GITHUB_REPOSITORY" --clobber
+          gh release view files -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 || \
+            gh release create files -R "$GITHUB_REPOSITORY" \
+              --title "Engine files (in-app update mirror)" \
+              --notes "manga.py / manga_app.py / bridge.py / extract_ui.py برای آپدیت خودکار اپ"
+          gh release upload files manga.py manga_app.py bridge.py extract_ui.py \
+            -R "$GITHUB_REPOSITORY" --clobber
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Attach to Release (فقط روی release)
+      - name: Attach to Release (فقط وقتی بیلد از روی Release اجرا شده)
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: manga-translator-*.apk
+          files: MangaTranslator-*.apk

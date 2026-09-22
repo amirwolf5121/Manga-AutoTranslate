@@ -6,30 +6,27 @@ plugins {
 
 android {
     namespace = "com.amirwolf.mangatranslator"
+    // ۳۵ = پیکربندی اصلی ریپو (AGP 8.7.3)
     compileSdk = 35
 
     defaultConfig {
         applicationId = "com.amirwolf.mangatranslator"
+        // ۲۴ = اندروید ۷.۰ — کف اجباری: ویل opencv چاکوپی برای py3.10 فقط
+        // android_24 ساخته شده (android_21 فقط cp38 دارد) → پایین‌تر از این ممکن نیست
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.14"
+        versionCode = 2
+        versionName = "1.15"
 
+        // معماری‌ها از بیرون قابل انتخاب: -PappAbis=arm64-v8a (سبک) یا همه برای universal
+        // پکیج‌های پایتونی هر معماری ~۱۵-۲۰MB است → تک‌ABI، حجم APK را نصف می‌کند
+        val buildAbis = ((findProperty("appAbis") as String?)
+            ?: "arm64-v8a,armeabi-v7a,x86,x86_64")
+            .split(",").map { it.trim() }.filter { it.isNotEmpty() }
         ndk {
-            // همه معماری‌ها: گوشی جدید (arm64)، گوشی قدیمی ۳۲بیت (v7a)،
-            // شبیه‌ساز (x86_64) و x86
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+            abiFilters += buildAbis
         }
-    }
 
-    // یک APK جدا برای هر معماری + یک universal همه‌سازگار
-    splits {
-        abi {
-            isEnable = true
-            reset()
-            include("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
-            isUniversalApk = true
-        }
     }
 
     packaging {

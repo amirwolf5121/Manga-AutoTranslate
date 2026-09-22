@@ -10,6 +10,7 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.provider.OpenableColumns
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
@@ -229,9 +230,21 @@ class MainActivity : AppCompatActivity() {
                 copyBundledSources()
                 val launcher = Python.getInstance().getModule("launcher")
                 launcher.callAttr("main", filesDir.absolutePath)
-                bridge = Python.getInstance().getModule("bridge")
+                // لایه پایدار — آپدیت ریپو نمی‌تواند فیکس‌های Ollama/سلامت را پاک کند
+                bridge = Python.getInstance().getModule("native_bridge")
+                // چک سلامت موتور: اگر manga.py / manga_app.py خراب باشد، کامل بگو چه چیزی خراب است
+                var healthReport = ""
+                try {
+                    val h = JSONObject(bridge.callAttr("health").toString())
+                    if (!h.optBoolean("ok")) healthReport = h.optString("report", "")
+                } catch (_: Exception) {
+                }
                 val st = launcher.callAttr("status").toString()
-                ui.post { logBox.text = st }
+                ui.post {
+                    logBox.text = if (healthReport.isNotBlank())
+                        healthReport + "\n\n—— وضعیت فایل‌ها —\n" + st
+                    else st
+                }
                 ui.post { buildForm() }
             } catch (e: PyException) {
                 ui.post {
@@ -809,7 +822,7 @@ class MainActivity : AppCompatActivity() {
         map.put("instruction", firstNonEmpty(o, "instruction_text", "instruction") ?: "")
         map.put("story_brief", optBoolD(o, true, "story_brief"))
         // تنظیمات پیشرفته — اگر فیلدش در manifest نبود، دیفالت خود موتور می‌ماند
-        for (k in listOf("workers", "bubbles", "batchw", "timeout", "maxre", "reqdelay", "temp")) {
+        for (k in listOf("workers", "bubbles", "batchw", "timeout", "maxre", "reqdelay", "temp", "api_base")) {
             if (o.has(k) && !o.isNull(k)) map.put(k, o.get(k))
         }
         // فونت‌ها: هر فیلد file/bool باقی‌مانده (فونت اصلی + لحن‌ها از manga_app.py)
@@ -992,7 +1005,29 @@ class MainActivity : AppCompatActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_FILE && resultCode == Activity.RESULT_OK && data?.data != null) {
             val uri = data.data!!
-            val name = (uri.lastPathSegment ?: "input.bin").substringAfterLast('/')
+            val fid0 = pickerField ?: ""
+            // اول نام واقعی فایل را از provider بپرس (مرورگر/فایل‌منیجر معمولاً DisplayName می‌دهد)
+            var name = queryDisplayName(uri)
+            if (name.isNullOrBlank()) name = uri.lastPathSegment ?: "input.bin"
+            name = name.substringAfterLast('/')
+            // گالری اندروید گاهی نام بدون پسوند می‌دهد (مثل «image:1000223081»)
+            // → موتور ورودی بی‌پسوند را قبول نمی‌کند؛ پسوند را از MIME بساز
+            if (!name.contains('.')) {
+                val mime = try { contentResolver.getType(uri) } catch (_: Exception) { null }
+                val ext = when {
+                    mime?.startsWith("image/") == true ->
+                        "." + mime.removePrefix("image/").substringBefore('+')
+                            .replace("jpeg", "jpg")
+                    mime == "application/pdf" -> ".pdf"
+                    mime == "application/zip" || mime == "application/x-zip-compressed" -> ".zip"
+                    mime?.startsWith("font/") == true || mime == "application/x-font-ttf" -> ".ttf"
+                    fid0.contains("font") -> ".ttf"
+                    else -> ".png"
+                }
+                name += ext
+            }
+            // کاراکترهای غیرمجاز نام فایل (مثل «:» در image:1000223081)
+            name = name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
             val dest = File(cacheDir, "pick_" + System.currentTimeMillis() + "_" + name)
             contentResolver.openInputStream(uri)?.use { input ->
                 dest.outputStream().use { output -> input.copyTo(output) }
@@ -1006,6 +1041,16 @@ class MainActivity : AppCompatActivity() {
                 (fieldViews[fid + "_btn"] as? Button)?.text = "✓ ${dest.name}"
             }
             saveVal("last_file_name", dest.name)
+        }
+    }
+
+    /** نام واقعی فایل از provider (ستون DISPLAY_NAME) — null اگر ممکن نشد. */
+    private fun queryDisplayName(uri: Uri): String? {
+        return try {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        } catch (_: Exception) {
+            null
         }
     }
 

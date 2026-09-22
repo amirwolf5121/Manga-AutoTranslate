@@ -23,6 +23,67 @@ import manga_app  # نسخه آپدیت‌شده از پوشه updates (sys.path
 STATE = {"job": None, "lock": threading.Lock()}
 _MF_CACHE = {"mf": None}
 
+# ---------- اصلاح پسوند ورودی (فایل pick_شدهٔ گالری اندروید) ----------
+# گالری اندروید اغلب نام بدون پسوند می‌دهد (مثل image:1000223081) و موتور
+# ورودی بی‌پسوند را با «نوع ورودی پشتیبانی نمی‌شه» رد می‌کند. اینجا با
+# magic bytes پسوند واقعی فایل پیدا و یک کپی با پسوند درست ساخته می‌شود.
+_IMG_MAGICS = (
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+    (b"BM", ".bmp"),
+    (b"PK\x03\x04", ".zip"),
+    (b"PK\x05\x06", ".zip"),
+    (b"%PDF", ".pdf"),
+)
+_ACCEPTED_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".zip", ".pdf"}
+
+
+def _fix_input_ext(path):
+    """پسوند فایل ورودی را در صورت نیاز درست می‌کند.
+
+    URL و پوشه دست‌نخورده می‌مانند؛ فقط فایل‌های بی‌پسوند یا با پسوند ناشناخته
+    بازرسی می‌شوند. اگر نوع فایل قابل تشخیص نبود، همان مسیر برمی‌گردد.
+    """
+    try:
+        if not path or "://" in path or not os.path.isfile(path):
+            return path
+        ext = os.path.splitext(path)[1].lower()
+        if ext in _ACCEPTED_EXTS:
+            return path
+        with open(path, "rb") as f:
+            head = f.read(16)
+        fixed = ""
+        for magic, e in _IMG_MAGICS:
+            if head.startswith(magic):
+                fixed = e
+                break
+        if not fixed and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+            fixed = ".webp"
+        if not fixed:
+            try:
+                from PIL import Image
+                with Image.open(path) as im:
+                    fmt = (im.format or "").lower()
+                if fmt == "jpeg":
+                    fmt = "jpg"
+                if fmt in ("png", "jpg", "webp", "bmp", "gif"):
+                    fixed = "." + fmt
+            except Exception:
+                return path
+        if not fixed:
+            return path
+        base = os.path.basename(path).replace(":", "_")
+        new_path = os.path.join(os.path.dirname(path), base + fixed)
+        if os.path.abspath(new_path) == os.path.abspath(path):
+            return path
+        import shutil as _sh
+        _sh.copyfile(path, new_path)
+        return new_path
+    except Exception:
+        return path
+
 
 def _bundles():
     """(slot, fname, desc, urls) از manga_app.py فعلی (runtime)."""
@@ -255,6 +316,12 @@ def _run(job):
             except Exception:
                 pass
         langs = [x for x in str(p.get("ocr_lang") or "en").split() if x.strip()]
+        # ورودی بی‌پسوند (pick گالری اندروید) را قبل از موتور اصلاح کن
+        _src0 = str(p.get("src") or "")
+        _src1 = _fix_input_ext(_src0)
+        if _src1 != _src0:
+            p["src"] = _src1
+            _log(job, "🧩 پسوند ورودی اصلاح شد → %s" % os.path.basename(_src1))
         keys = [k.strip() for k in str(p.get("keys") or "").split(",") if k.strip()]
         if not keys and not (bool(p.get("fake")) or bool(p.get("clean_only"))):
             _log(job, "❌ حداقل یک کلید API لازم است — کلید بده یا "
