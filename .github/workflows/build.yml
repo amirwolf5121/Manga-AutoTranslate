@@ -70,6 +70,25 @@ jobs:
           path: MangaTranslator-*.apk
           if-no-files-found: error
 
+      # هر بیلد دستی، APKها را روی Release «apk» (رفرش‌شونده) می‌گذارد تا
+      # بدون ورود به صفحه Actions مستقیم از بخش Releases دانلود شوند
+      - name: Put APKs in Releases (بیلد دستی)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          cp MangaTranslator-*-arm64.apk      MangaTranslator-arm64.apk
+          cp MangaTranslator-*-armv7a.apk     MangaTranslator-armv7a.apk
+          cp MangaTranslator-*-universal.apk  MangaTranslator-universal.apk
+          gh release view apk -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 || \
+            gh release create apk -R "$GITHUB_REPOSITORY" --latest \
+              --title "APK — آخرین بیلد خودکار" \
+              --notes "خروجی آخرین اجرای موفق «Build Android APK». برای نسخه‌های رسمی به Releaseهای versionدار سر بزنید."
+          gh release edit apk -R "$GITHUB_REPOSITORY" \
+            --notes "خروجی بیلد شماره ${{ github.run_number }} — ${{ github.event.head_commit.message || 'اجرای دستی' }}"
+          gh release upload apk MangaTranslator-arm64.apk MangaTranslator-armv7a.apk MangaTranslator-universal.apk \
+            -R "$GITHUB_REPOSITORY" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       # آینه آپدیت درون‌اپ — چون raw.githubusercontent.com در ایران بلاک است،
       # اپ فایل‌های موتور را از همین Release می‌گیرد
       - name: Publish engine files (mirror آپدیت درون‌اپ)
