@@ -35,6 +35,13 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import com.google.android.material.slider.Slider
 import org.json.JSONObject
+import android.app.Dialog
+import android.content.ContentValues
+import android.content.pm.PackageManager
+import android.graphics.drawable.ColorDrawable
+import android.os.Build
+import android.provider.MediaStore
+
 import java.io.File
 
 /** اپ بومی مانگا مترجم — UI از manga_app.py، طرح دقیق مثل وب گرادیو. */
@@ -108,6 +115,14 @@ class MainActivity : AppCompatActivity() {
         window.statusBarColor = BG
 
         if (!Python.isStarted()) Python.start(AndroidPlatform(this))
+
+        // اجازه حافظه فقط برای اندروید ۹ و قدیمی‌تر — اندروید ۱۰+ با MediaStore بی‌اجازه است
+        if (Build.VERSION.SDK_INT < 29 &&
+            checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+            PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                REQ_STORAGE)
+        }
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -965,47 +980,90 @@ class MainActivity : AppCompatActivity() {
         }
         if (debug.isNotEmpty()) {
             resultsBox.addView(resBtn("🔍  نمایش دیباگ (${debug.size})", false) { viewer(debug, 0) })
-            resultsBox.addView(resBtn("⬇  دانلود دیباگ", false) { saveToDownloads(debug.first()) })
+            resultsBox.addView(resBtn("⬇  دانلود دیباگ (${debug.size})", false) {
+                saveManyToDownloads(debug, "debug")
+            })
+        } else if (st.optBoolean("debug_on")) {
+            resultsBox.addView(resBtn("🔍  نمایش دیباگ — تصویری تولید نشد", false) {
+                Toast.makeText(this,
+                    "موتور در این اجرا تصویر دیباگ تولید نکرد — فقط صفحه‌های دارای حباب/متن تصویر دیباگ دارند.",
+                    Toast.LENGTH_LONG).show()
+            })
         }
         for (i in 0 until resultsBox.childCount) {
             val lp = resultsBox.getChildAt(i).layoutParams as LinearLayout.LayoutParams
             lp.topMargin = dp(7)
         }
+        autoSaveOutputs(images, outFile)
     }
 
-    /** نمایشگر تمام‌صفحه با اسکرول و زوم دو-انگشتی (بزرگ/کوچک کردن عکس).
-     *  دبل-تپ: زوم ×2.5 / برگشت به اندازه‌ی صفحه. با دو دکمه صفحه قبل/بعد. */
+    /** نمایشگر تمام‌صفحه — هیچ دکمه‌ای ندارد؛ ناوبری با کشیدن انگشت:
+     *  به پایین یا چپ = صفحه بعد، به بالا یا راست = صفحه قبل.
+     *  پینچ = بزرگ/کوچک کردن، دبل‌تپ = زوم ×2.5، تک‌تپ = نمایش/مخفی شماره صفحه. */
     private fun viewer(paths: List<String>, start: Int) {
+        var idx = start.coerceIn(0, paths.size - 1)
         val iv = ZoomImageView(this)
-        var idx = start
-        val wrap = android.widget.FrameLayout(this).apply {
-            addView(iv, ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT)
+        val pill = TextView(this).apply {
+            setTextColor(Color.WHITE); textSize = 13f; typeface = Typeface.DEFAULT_BOLD
+            background = rounded(Color.parseColor("#88000000"), 999)
+            setPadding(dp(14), dp(6), dp(14), dp(6))
         }
-        val dlg = AlertDialog.Builder(this)
-            .setTitle("صفحه ${idx + 1} از ${paths.size}")
-            .setView(wrap)
-            .setPositiveButton("بعدی", null)
-            .setNeutralButton("قبلی", null)
-            .setNegativeButton("بستن", null)
-            .create()
-        dlg.setOnShowListener {
-            val show = {
-                dlg.setTitle("صفحه ${idx + 1} از ${paths.size}")
-                iv.setImagePath(paths[idx])
-            }
-            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                idx = (idx + 1) % paths.size; show()
-            }
-            dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                idx = (idx - 1 + paths.size) % paths.size; show()
-            }
-            show()
+        val close = TextView(this).apply {
+            text = "✕"; setTextColor(Color.WHITE); textSize = 15f
+            gravity = Gravity.CENTER
+            background = rounded(Color.parseColor("#88000000"), 999)
         }
+        val root = android.widget.FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        root.addView(iv, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT))
+        root.addView(pill, android.widget.FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(14) })
+        root.addView(close, android.widget.FrameLayout.LayoutParams(
+            dp(34), dp(34), Gravity.TOP or Gravity.END).apply {
+            topMargin = dp(10); marginEnd = dp(10) })
+
+        val dlg = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+        dlg.setContentView(root)
+        dlg.window?.setBackgroundDrawable(ColorDrawable(Color.BLACK))
+        dlg.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT)
+        close.setOnClickListener { dlg.dismiss() }
+
+        val hideRun = Runnable { pill.visibility = View.GONE; close.visibility = View.GONE }
+        val showChrome = {
+            pill.visibility = View.VISIBLE; close.visibility = View.VISIBLE
+            ui.removeCallbacks(hideRun); ui.postDelayed(hideRun, 2400)
+        }
+        val showPage = {
+            pill.text = "صفحه ${idx + 1} از ${paths.size}"
+            iv.setImagePath(paths[idx])
+            showChrome()
+        }
+        iv.onPageNav = { dir ->
+            idx = (idx + dir + paths.size) % paths.size
+            showPage()
+        }
+        iv.onTap = {
+            if (pill.visibility == View.VISIBLE) {
+                ui.removeCallbacks(hideRun)
+                pill.visibility = View.GONE; close.visibility = View.GONE
+            } else showChrome()
+        }
+        dlg.setOnDismissListener { ui.removeCallbacks(hideRun) }
+        showPage()
         dlg.show()
+        if (!prefs.getBoolean("viewer_hint", false)) {
+            prefs.edit().putBoolean("viewer_hint", true).apply()
+            Toast.makeText(this,
+                "برای صفحه بعد انگشت را به پایین یا چپ بکش • دبل‌تپ: زوم", Toast.LENGTH_LONG).show()
+        }
     }
 
-    /** ImageView با زوم پینچ، پن (جابه‌جایی) و دبل-تپ — جایگزین ScrollView ساده. */
+    /** ImageView با زوم پینچ، پن، دبل‌تپ و ناوبری فینگی.
+     *  در مقیاس عادی (کل تصویر در صفحه) هر فینگ جهت‌دار صفحه عوض می‌کند؛
+     *  در حالت زوم فقط فینگ عمودی در لبه پایین/بالای تصویر ناوبری می‌کند.
+     *  دیکود تصویر در بک‌گراند انجام می‌شود (بدون قفل‌شدن UI) + کش کوچک. */
     private inner class ZoomImageView(ctx: android.content.Context) :
         androidx.appcompat.widget.AppCompatImageView(ctx) {
 
@@ -1013,6 +1071,13 @@ class MainActivity : AppCompatActivity() {
         private val vals = FloatArray(9)
         private var minScale = 1f
         private var maxScale = 10f
+        var onPageNav: ((Int) -> Unit)? = null
+        var onTap: (() -> Unit)? = null
+
+        private val bmpCache = object : android.util.LruCache<String, android.graphics.Bitmap>(
+            ((Runtime.getRuntime().maxMemory() / 12L).toInt()).coerceAtLeast(8 * 1024 * 1024)) {
+            override fun sizeOf(key: String, b: android.graphics.Bitmap): Int = b.byteCount
+        }
 
         private val scaleDet = android.view.ScaleGestureDetector(ctx,
             object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -1029,10 +1094,32 @@ class MainActivity : AppCompatActivity() {
                                       dx: Float, dy: Float): Boolean {
                     mat.postTranslate(-dx, -dy); apply(); return true
                 }
+                override fun onSingleTapConfirmed(e: android.view.MotionEvent): Boolean {
+                    onTap?.invoke(); return true
+                }
                 override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
                     if (curScale() > minScale * 1.25f) fit()
                     else zoom(2.5f, e.x, e.y)
                     return true
+                }
+                override fun onFling(e1: android.view.MotionEvent?,
+                                     e2: android.view.MotionEvent,
+                                     vx: Float, vy: Float): Boolean {
+                    val cb = onPageNav ?: return false
+                    val avx = Math.abs(vx); val avy = Math.abs(vy)
+                    if (Math.max(avx, avy) < 2000f) return false
+                    val atFit = curScale() <= minScale * 1.08f
+                    if (atFit) {
+                        // کل تصویر در صفحه است — چپ یا پایین = بعدی، راست یا بالا = قبلی
+                        cb(if (vx < 0 || (avy > avx && vy > 0)) 1 else -1)
+                        return true
+                    }
+                    // زوم‌شده — فقط فینگ عمودی تند در لبه پایین/بالا ناوبری می‌کند
+                    if (avy > avx && avy > 2600f) {
+                        if (vy > 0 && atBottomEdge()) { cb(1); return true }
+                        if (vy < 0 && atTopEdge()) { cb(-1); return true }
+                    }
+                    return false
                 }
             })
 
@@ -1041,15 +1128,28 @@ class MainActivity : AppCompatActivity() {
         }
 
         fun setImagePath(path: String) {
-            val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(path, o)
-            var sample = 1
-            var m = maxOf(o.outWidth, o.outHeight)
-            while (m > 3000) { sample *= 2; m /= 2 }
-            val bmp = BitmapFactory.decodeFile(path,
-                BitmapFactory.Options().apply { inSampleSize = sample })
-            setImageBitmap(bmp)
-            post { fit() }
+            tag = path
+            val cached = bmpCache.get(path)
+            if (cached != null) {
+                setImageBitmap(cached); post { fit() }; return
+            }
+            setImageBitmap(null)
+            Thread {
+                val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(path, o)
+                var sample = 1
+                var m = maxOf(o.outWidth, o.outHeight)
+                while (m > 3000) { sample *= 2; m /= 2 }
+                val bmp = BitmapFactory.decodeFile(path,
+                    BitmapFactory.Options().apply { inSampleSize = sample })
+                if (bmp != null) bmpCache.put(path, bmp)
+                post {
+                    if (tag == path) {
+                        setImageBitmap(bmp)
+                        post { fit() }
+                    }
+                }
+            }.start()
         }
 
         private fun curScale(): Float {
@@ -1072,6 +1172,22 @@ class MainActivity : AppCompatActivity() {
             mat.setScale(s, s)
             mat.postTranslate((width - iw * s) / 2f, (height - ih * s) / 2f)
             apply()
+        }
+
+        private fun atBottomEdge(): Boolean {
+            val d = drawable ?: return true
+            mat.getValues(vals)
+            val ih = d.intrinsicHeight * vals[android.graphics.Matrix.MSCALE_X]
+            if (ih <= height) return true
+            return vals[android.graphics.Matrix.MTRANS_Y] >= height - ih - dp(2)
+        }
+
+        private fun atTopEdge(): Boolean {
+            val d = drawable ?: return true
+            mat.getValues(vals)
+            val ih = d.intrinsicHeight * vals[android.graphics.Matrix.MSCALE_X]
+            if (ih <= height) return true
+            return vals[android.graphics.Matrix.MTRANS_Y] <= dp(2)
         }
 
         private fun apply() {
@@ -1108,27 +1224,149 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun saveToDownloads(path: String) {
-        try {
+    private fun stampNow(): String =
+        java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+
+    private fun canWritePublic(): Boolean =
+        Build.VERSION.SDK_INT >= 29 ||
+            checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+            PackageManager.PERMISSION_GRANTED
+
+    /** ذخیره یک فایل در Download/manga —
+     *  اندروید ۱۰+ : MediaStore.Downloads با RELATIVE_PATH (بدون هیچ اجازه‌ای —
+     *  راه درست Scoped Storage؛ خطای «دسترسی حافظه نداره» همین بود)؛
+     *  اندروید ۹−  : File API با اجازه WRITE_EXTERNAL_STORAGE (در شروع اپ خواسته می‌شود). */
+    @Suppress("NewApi")
+    private fun saveAnyToDownloads(path: String, subDir: String?, niceName: String?): Boolean {
+        return try {
             val f = File(path)
-            // پوشه Download/manga + نام با فرمت انتخابی کاربر (pdf/zip/…)
-            val dir = File(Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_DOWNLOADS), "manga").apply { mkdirs() }
-            val fmt = (values["out_fmt"]?.toString()
-                ?: prefs.getString("out_fmt", null) ?: "PDF").lowercase()
-            val ext = f.extension.ifBlank { fmt }
-            val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmm",
-                java.util.Locale.US).format(java.util.Date())
-            val dest = File(dir, "manga_" + stamp + "." + ext)
-            f.copyTo(dest, overwrite = true)
-            Toast.makeText(this, "ذخیره شد: Download/manga/${dest.name}",
-                Toast.LENGTH_LONG).show()
+            if (!f.isFile) return false
+            val name = niceName ?: f.name
+            val rel = if (subDir.isNullOrBlank()) "Download/manga/"
+                      else "Download/manga/$subDir/"
+            if (Build.VERSION.SDK_INT >= 29) {
+                val mime = when (f.extension.lowercase()) {
+                    "jpg", "jpeg" -> "image/jpeg"
+                    "png" -> "image/png"
+                    "webp" -> "image/webp"
+                    "pdf" -> "application/pdf"
+                    "zip" -> "application/zip"
+                    "psd" -> "image/vnd.adobe.photoshop"
+                    "html" -> "text/html"
+                    else -> "application/octet-stream"
+                }
+                val cv = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                    put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, rel)
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv) ?: return false
+                try {
+                    contentResolver.openOutputStream(uri)?.use { o ->
+                        f.inputStream().use { it.copyTo(o) }
+                    } ?: return false
+                    contentResolver.update(uri, ContentValues().apply {
+                        put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    }, null, null)
+                } catch (e: Exception) {
+                    try { contentResolver.delete(uri, null, null) } catch (_: Exception) {}
+                    throw e
+                }
+                true
+            } else {
+                val dir = File(Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOWNLOADS),
+                    if (subDir.isNullOrBlank()) "manga" else "manga/$subDir")
+                dir.mkdirs()
+                f.copyTo(File(dir, name), overwrite = true)
+                true
+            }
         } catch (e: Exception) {
-            Toast.makeText(this, "ذخیره نشد: ${e.message}", Toast.LENGTH_LONG).show()
+            android.util.Log.e("MangaApp", "saveAnyToDownloads", e)
+            false
         }
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    private fun saveToDownloads(path: String) {
+        if (!canWritePublic()) {
+            requestPermissions(arrayOf(android.Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                REQ_STORAGE)
+            Toast.makeText(this, "اول اجازه حافظه را بده، بعد دوباره بزن",
+                Toast.LENGTH_LONG).show()
+            return
+        }
+        val f = File(path)
+        val ext = f.extension.ifBlank { "bin" }
+        Thread {
+            val ok = saveAnyToDownloads(path, null, "manga_${stampNow()}.$ext")
+            ui.post {
+                Toast.makeText(this,
+                    if (ok) "✔ ذخیره شد: Download/manga" else "❌ ذخیره نشد: ${f.name}",
+                    Toast.LENGTH_LONG).show()
+            }
+        }.start()
+    }
+
+    private fun saveManyToDownloads(paths: List<String>, subPrefix: String) {
+        if (!canWritePublic()) {
+            requestPermissions(arrayOf(android.Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                REQ_STORAGE)
+            Toast.makeText(this, "اول اجازه حافظه را بده، بعد دوباره بزن",
+                Toast.LENGTH_LONG).show()
+            return
+        }
+        Thread {
+            val sub = subPrefix + "_" + stampNow()
+            var n = 0
+            for (p in paths) if (saveAnyToDownloads(p, sub, null)) n++
+            ui.post {
+                Toast.makeText(this,
+                    if (n > 0) "✔ $n فایل ذخیره شد: Download/manga/$sub" else "❌ ذخیره نشد",
+                    Toast.LENGTH_LONG).show()
+            }
+        }.start()
+    }
+
+    /** ذخیره خودکار خروجی هر اجرا در Download/manga — فایل نهایی (PDF/ZIP/…) + تک‌تک صفحات.
+     *  چون خروجی داخلی اپ در هر اجرای جدید پاک می‌شود، این کار تضمین می‌کند نسخه
+     *  ترجمه‌شده همیشه در حافظه عمومی بماند. */
+    private fun autoSaveOutputs(images: List<String>, outFile: String) {
+        if (outFile.isBlank() && images.isEmpty()) return
+        if (!canWritePublic()) {
+            requestPermissions(arrayOf(android.Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                REQ_STORAGE)
+            Toast.makeText(this,
+                "خروجی در Download/manga ذخیره نشد — اجازه حافظه لازم است",
+                Toast.LENGTH_LONG).show()
+            return
+        }
+        Thread {
+            try {
+                var n = 0
+                val f = File(outFile)
+                if (f.isFile) {
+                    if (saveAnyToDownloads(outFile, null,
+                            "manga_${stampNow()}." + f.extension.ifBlank { "bin" })) n++
+                }
+                val sub = "pages_${stampNow()}"
+                for (p in images) if (saveAnyToDownloads(p, sub, null)) n++
+                ui.post {
+                    if (n > 0) Toast.makeText(this,
+                        "📥 $n فایل ذخیره شد در Download/manga", Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                ui.post {
+                    Toast.makeText(this, "ذخیره خودکار نشد: ${e.message}",
+                        Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_FILE && resultCode == Activity.RESULT_OK && data?.data != null) {
             val uri = data.data!!
@@ -1181,5 +1419,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    companion object { const val REQ_FILE = 1001 }
+    companion object {
+        const val REQ_FILE = 1001
+        const val REQ_STORAGE = 1002
+    }
 }

@@ -547,6 +547,9 @@ def _run(job):
             job["out_file"] = dl
             job["done"] = True
         _log(job, "✅ تمام شد — %d صفحه، خروجی: %s" % (len(imgs), dl or "-"))
+        if bool(p.get("debug")) and not dbg:
+            _log(job, "🔍 دیباگ روشن بود ولی تصویر دیباگی ساخته نشد — "
+                      "تصویر دیباگ فقط برای صفحه‌هایی که متن/حباب دارند تولید می‌شود.")
     except Exception:
         # خروجی موتور تا لحظه خطا — ارور واقعی مخفی‌شده را نشان می‌دهد
         try:
@@ -574,6 +577,7 @@ def poll():
             "images": job.get("images", []),
             "debug_images": job.get("debug_images", []),
             "out_file": job.get("out_file"),
+            "debug_on": bool((job.get("params") or {}).get("debug")),
         }, ensure_ascii=False)
 
 

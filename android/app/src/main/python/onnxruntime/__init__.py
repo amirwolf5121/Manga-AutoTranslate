@@ -218,14 +218,61 @@ def _tensor_create(x):
 
 
 def _to_numpy(value):
-    """آرایه جاوای چندبعدی → numpy (نوع از خود داده)."""
+    """آرایه جاوای چندبعدی → numpy.
+
+    نکته: OnnxTensor.getValue() آرایه‌ی جاوا float می‌دهد که چاکوپی به float
+    پایتون (دوبل) تبدیل می‌کند → numpy float64 می‌سازد؛ در حالی که ORT واقعی
+    float32 برمی‌گرداند. پس float64 → float32 (مثل ORT واقعی).
+    """
     def conv(v):
         try:
             it = iter(v)
         except TypeError:
             return v
         return [conv(x) for x in it]
-    return np.asarray(conv(value))
+    arr = np.asarray(conv(value))
+    if arr.dtype == np.float64:
+        arr = arr.astype(np.float32)
+    return arr
+
+
+def _result_value(result, name):
+    """استخراج OnnxValue از OrtSession.Result جاوا — سازگار با همه حالت‌ها.
+
+    باگ واقعی دستگاه (v1.17): OrtSession.Result.get(String) در کتابخانه جاوا
+    java.util.Optional برمی‌گرداند، نه خود OnnxValue → فراخوانی
+    t.getValue() روی Optional ارور
+    «'Optional' object has no attribute 'getValue'» می‌داد و کل فاز ۱ (تشخیص
+    حباب + OCR) می‌شکست. سه مسیر به‌ترتیب امتحان می‌شود:
+      ۱) iterator — Result از Iterable<Map.Entry<String,OnnxValue>> ارث می‌برد
+         → بدون Optional اصلاً (پایدارترین مسیر)
+      ۲) get(String) → Optional → unwrap دستی با isPresent/get
+      ۳) اگر هم None بود یا OnnxValue مستقیم بود، همان برگردانده می‌شود.
+    """
+    # مسیر ۱ — iterator (بدون Optional)
+    try:
+        it = result.iterator()
+        while it.hasNext():
+            e = it.next()
+            if str(e.getKey()) == str(name):
+                return e.getValue()
+    except Exception:
+        pass
+    # مسیر ۲ — get(String) → Optional
+    try:
+        t = result.get(name)
+    except Exception:
+        t = None
+    if t is None:
+        return None
+    # unwrap Optional جاوا (java.util.Optional از API 24 موجود است)
+    try:
+        if hasattr(t, "isPresent"):
+            return t.get() if t.isPresent() else None
+    except Exception:
+        pass
+    # مسیر ۳ — خود OnnxValue برگشته
+    return t
 
 
 class _ModelMeta:
@@ -305,7 +352,9 @@ class InferenceSession:
         names = [str(n) for n in output_names] if output_names else self._out_names
         outs = []
         for name in names:
-            t = result.get(name)
+            # ⚠ Result.get(String) در جاوا Optional برمی‌گرداند نه OnnxValue —
+            # پس unwrap باید دستی انجام شود (باگ واقعی دستگاه در v1.17)
+            t = _result_value(result, name)
             if t is None:
                 outs.append(None)
                 continue
