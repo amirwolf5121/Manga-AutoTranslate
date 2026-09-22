@@ -62,6 +62,16 @@ jobs:
           name: manga-translator-apk
           path: manga-translator-*.apk
 
+      - name: Publish engine files (mirror آپدیت درون‌اپ — raw در ایران بلاک است)
+        run: |
+          cp manga.py manga_app.py .
+          cp android/app/src/main/python/bridge.py .
+          cp android/app/src/main/python/extract_ui.py .
+          gh release view files -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||             gh release create files -R "$GITHUB_REPOSITORY"               --title "Engine files (in-app update mirror)"               --notes "manga.py / manga_app.py / bridge.py / extract_ui.py برای آپدیت خودکار اپ"
+          gh release upload files manga.py manga_app.py bridge.py extract_ui.py             -R "$GITHUB_REPOSITORY" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Attach to Release (فقط روی release)
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2

@@ -121,10 +121,16 @@ def apply_updates(files_dir):
     import requests
 
     def _fetch(name):
-        """از ریپو اصلی؛ اگر نبود از فال‌بک. None = نشد."""
-        for base in REPO_RAWS:
+        """اول release-asset ریپو (در ایران باز است)، بعد raw (اغلب بلاک)."""
+        urls = [
+            "https://github.com/amirwolf5121/Manga-AutoTranslate/releases/download/files/"
+            + name,
+            "https://github.com/amirwolf5122/Manga-AutoTranslate/releases/download/files/"
+            + name,
+        ] + ["%s/%s" % (base, name) for base in REPO_RAWS]
+        for u in urls:
             try:
-                r = requests.get("%s/%s" % (base, name), timeout=30)
+                r = requests.get(u, timeout=30)
                 if r.status_code == 200 and len(r.content) > 500:
                     return r.content
             except Exception:
