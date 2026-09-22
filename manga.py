@@ -1934,7 +1934,15 @@ class MangaTranslator:
             self.det = None
 
         if self.provider_type == "gemini":
-            if not _HAS_GEMINI:
+            if not _HAS_GEMINI and _HAS_OPENAI:
+                # اندروید: google-genai نصب‌شدنی نیست (pydantic-core native)
+                # → خودکار روی endpoint رسمی سازگار openai گوگل سوییچ کن
+                print("[!] google-genai روی این دستگاه نیست → "
+                      "Gemini از مسیر سازگار openai (SDK واقعی) اجرا می‌شود")
+                self.provider_cfg = PROVIDER_PRESETS["gemini-openai"]
+                self.provider_type = "openai"
+                self.api_base = self.provider_cfg["base_url"]
+            elif not _HAS_GEMINI:
                 raise ImportError(
                     "برای استفاده از Gemini باید google-genai نصب باشد:\n"
                     "  pip install google-genai"
