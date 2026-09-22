@@ -15,8 +15,8 @@ android {
         // android_24 ساخته شده (android_21 فقط cp38 دارد) → پایین‌تر از این ممکن نیست
         minSdk = 24
         targetSdk = 34
-        versionCode = 7
-        versionName = "1.20"
+        versionCode = 8
+        versionName = "1.21"
 
         // معماری‌ها از بیرون قابل انتخاب: -PappAbis=arm64-v8a (سبک) یا همه برای universal
         // پکیج‌های پایتونی هر معماری ~۱۵-۲۰MB است → تک‌ABI، حجم APK را نصف می‌کند
@@ -63,7 +63,10 @@ chaquopy {
     // به files/rapidocr_models دانلود می‌کند (manga.py مدل‌dir را ست می‌کند)
     sourceSets {
         getByName("main") {
-            exclude("rapidocr/models/**")
+            // فقط مدل‌های سنگین onnx را حذف کن — دیکشنری‌های .txt (rec dict)
+            // باید داخل APK بمانند تا دانلود dict اشتباه رخ ندهد (باگ v1.20)
+            exclude("rapidocr/models/*.onnx")
+            exclude("rapidocr/models/*.onnx.*")
             exclude("**/__pycache__/**")
         }
     }
@@ -97,6 +100,12 @@ chaquopy {
 dependencies {
     // ONNX Runtime اندروید — شیم پایتونی onnxruntime روی این کار می‌کند
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+    // ML Kit Text Recognition v2 (bundled — مدل‌ها داخل APK، بدون GMS و بدون دانلود)
+    // موتور OCR سبک گوشی: en/latin + ja + ko + zh (v1.21)
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
+    implementation("com.google.mlkit:text-recognition-korean:16.0.1")
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.recyclerview:recyclerview:1.3.2")

@@ -1285,6 +1285,94 @@ class RapidOCRBackend:
         return [lines] if lines else None
 
 
+def _on_android() -> bool:
+    """آیا داخل اندروید (Chaquopy) اجرا می‌شویم؟"""
+    try:
+        import java  # noqa: F401  — فقط روی چاکوپی موجود است
+        return True
+    except Exception:
+        return False
+
+
+class MlKitBackend:
+    """موتور OCR سبک Google ML Kit — فقط روی اندروید (v1.21).
+
+    چرا؟ rapidocr/PaddleOCR روی گوشی مدل‌های ONNX سنگین را در RAM نگه می‌دارند
+    و CPU ضعیف را اشباع می‌کنند (فشار سیستم + ANR). ML Kit نسخهٔ bundled
+    مدل‌هایش داخل APK است (بدون دانلود و بدون GMS) و حافظه/CPU کمی می‌خواهد.
+    زبان‌ها: انگلیسی/لاتین، ژاپنی، کره‌ای، چینی.
+    خروجی دقیقاً هم‌شکل RapidOCRBackend.ocr: [[[box, (text, score)], ...]]
+    """
+
+    LANG_MAP = {
+        "en": "latin", "english": "latin", "latin": "latin",
+        "japan": "ja", "ja": "ja", "japanese": "ja",
+        "korean": "ko", "ko": "ko",
+        "ch": "zh", "zh": "zh", "chinese": "zh", "ch_sim": "zh",
+    }
+
+    def __init__(self, lang: str = "en"):
+        try:
+            from java import jclass
+        except Exception as e:
+            raise ImportError("MlKitBackend فقط روی اندروید (Chaquopy) کار می‌کند") from e
+        self._bridge = jclass("com.amirwolf.mangatranslator.MlKitBridge")
+        self.lang = self.LANG_MAP.get(str(lang).lower(), "latin")
+        print(f"[+] ML Kit OCR آماده (سبک — بدون مدل ONNX سنگین) | lang={self.lang}")
+
+    @staticmethod
+    def _clean(txt: str, latin: bool) -> str:
+        # برای CJK دست نمی‌زنیم — NFKD کاتاکانای نیم‌عرض را تغییر می‌دهد
+        if not latin:
+            return str(txt).strip()
+        try:
+            import unicodedata as _ud
+            out = _ud.normalize("NFKD", str(txt))
+            return "".join(ch for ch in out if not _ud.combining(ch)).strip()
+        except Exception:
+            return str(txt).strip()
+
+    def ocr(self, image_bgr: np.ndarray):
+        if image_bgr is None or image_bgr.size == 0:
+            return None
+        try:
+            import cv2
+            ok, buf = cv2.imencode(".png", image_bgr)
+        except Exception as e:
+            print(f"    [OCR] ML Kit کدگذاری تصویر نشد: {e}")
+            return None
+        if not ok:
+            return None
+        try:
+            lines_j = self._bridge.recognize(bytes(buf.tobytes()), self.lang)
+        except Exception as e:
+            msg = str(e).lower()
+            if "detection" in msg and "empty" in msg:
+                return None
+            print(f"    [OCR] ML Kit خطا: {e}")
+            return None
+        if not lines_j:
+            return None
+        lines = []
+        for item in lines_j:
+            try:
+                parts = str(item).split("|", 2)
+                if len(parts) < 3:
+                    continue
+                score_s, box_s, text = parts
+                score = float(score_s) if score_s else 1.0
+                nums = [float(v) for v in box_s.split(",")]
+                if len(nums) < 8 or not text.strip():
+                    continue
+                box = np.asarray(nums[:8], dtype=np.float32).reshape(4, 2)
+                text = self._clean(text, latin=(self.lang == "latin"))
+                if text:
+                    lines.append([box, (text, score)])
+            except Exception:
+                continue
+        return [lines] if lines else None
+
+
 class PaddleOCRWrapper:
     
 
@@ -1902,6 +1990,16 @@ class MangaTranslator:
                 print(f"[+] PaddleOCR آماده | lang={main_lang} | device={device}")
             except Exception as e:
                 print(f"[!] PaddleOCR لود نشد ({e}) → RapidOCR ONNX")
+
+        if self.ocr is None and _on_android():
+            # v1.21 — روی گوشی اولویت با ML Kit سبک است (مدل ONNX سنگین در
+            # RAM نمی‌ماند → فشار CPU/RAM و ANR از بین می‌رود). اگر به هر
+            # دلیلی نبود → همان مسیر قبلی RapidOCR.
+            try:
+                self.ocr = MlKitBackend(lang=main_lang)
+                self._ocr_backend_name = "mlkit"
+            except Exception as e:
+                print(f"[!] ML Kit لود نشد ({e}) → RapidOCR")
 
         if self.ocr is None:
             try:

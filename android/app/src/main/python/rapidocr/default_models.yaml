@@ -86,7 +86,7 @@ onnxruntime:
       ch_PP-OCRv5_rec_mobile:
         model_dir: https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx
         SHA256: 5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5
-        dict_url: https://github.com/amirwolf5121/Manga-AutoTranslate/releases/download/models/ppocr_keys_v1.txt
+        dict_url: https://github.com/amirwolf5121/Manga-AutoTranslate/releases/download/models/japan_dict.txt
       ch_PP-OCRv5_rec_server:
         model_dir: https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_server.onnx
         SHA256: e09385400eaaaef34ceff54aeb7c4f0f1fe014c27fa8b9905d4709b65746562a
@@ -94,7 +94,7 @@ onnxruntime:
       korean_PP-OCRv5_rec_mobile:
         model_dir: https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx
         SHA256: cd6e2ea50f6943ca7271eb8c56a877a5a90720b7047fe9c41a2e541a25773c9b
-        dict_url: https://github.com/amirwolf5121/Manga-AutoTranslate/releases/download/models/korean_dict.txt
+        dict_url: https://github.com/amirwolf5121/Manga-AutoTranslate/releases/download/models/korean_PP-OCRv5_rec_dict.txt
       latin_PP-OCRv5_rec_mobile:
         model_dir: https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/latin_PP-OCRv5_rec_mobile.onnx
         SHA256: b20bd37c168a570f583afbc8cd7925603890efbcdc000a59e22c269d160b5f5a
@@ -157,15 +157,15 @@ onnxruntime:
       multi_PP-OCRv6_rec_tiny:
         model_dir: https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_tiny.onnx
         SHA256: e16e242de5937ad92609223f19bc2aff3727ee40b095f996907c24749bad251b
-        dict_url: https://github.com/amirwolf5121/Manga-AutoTranslate/releases/download/models/ppocr_keys_v1.txt
+        dict_url: https://github.com/amirwolf5121/Manga-AutoTranslate/releases/download/models/PP-OCRv6_rec_dict.txt
       multi_PP-OCRv6_rec_small:
         model_dir: https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx
         SHA256: 6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884
-        dict_url: https://github.com/amirwolf5121/Manga-AutoTranslate/releases/download/models/ppocr_keys_v1.txt
+        dict_url: https://github.com/amirwolf5121/Manga-AutoTranslate/releases/download/models/PP-OCRv6_rec_dict.txt
       multi_PP-OCRv6_rec_medium:
         model_dir: https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx
         SHA256: eef444829dbbe18d7fea59a3f6eb75647518d2b3a9568d27c92e42940204894b
-        dict_url: https://github.com/amirwolf5121/Manga-AutoTranslate/releases/download/models/ppocr_keys_v1.txt
+        dict_url: https://github.com/amirwolf5121/Manga-AutoTranslate/releases/download/models/PP-OCRv6_rec_dict.txt
 openvino:
   PP-OCRv4:
     det:

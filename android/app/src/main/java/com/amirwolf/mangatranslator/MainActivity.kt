@@ -278,8 +278,10 @@ class MainActivity : AppCompatActivity() {
      *  قبلی از آپدیت شبکه APP_VER بالاتری داشته باشد. */
     private fun copyBundledSources() {
         try {
+            // مهر v2 (v1.21): manga.py تغییر کرده (ML Kit) — باید نسخهٔ همراه
+            // این APK روی دیسد جایگزین شود حتی اگر مهر v1 قبلاً وجود داشته باشد.
             val upd = File(filesDir, "updates").apply { mkdirs() }
-            val marker = File(upd, ".engine_offline_v1")
+            val marker = File(upd, ".engine_offline_v2")
             if (!marker.exists()) {
                 upd.listFiles()?.forEach { f ->
                     if (f.name.endsWith(".py") || f.name.startsWith(".ver_")) f.delete()
@@ -923,33 +925,80 @@ class MainActivity : AppCompatActivity() {
             runBtn.isEnabled = false
             runBtn.text = "⏳ در حال اجرا…"
             resultsBox.removeAllViews()
-            val r = JSONObject(bridge.callAttr("start_job", p.toString(), filesDir.absolutePath).toString())
-            if (r.optBoolean("ok")) pollLoop()
-            else {
-                logBox.text = "❌ " + r.optString("error", "خطا")
-                runBtn.isEnabled = true; runBtn.text = "🚀  شروع ترجمه"
-            }
+            // ⚠ فیکس ANR (v1.21): start_job روی main thread بود — وقتی provider
+            // «ollama» بود، چک سلامت HTTP آن (تا timeout=180s) main را بلاک
+            // می‌کرد → دیالوگ «انتظار/بستن برنامه». حالا کلاً در بک‌گراند.
+            Thread {
+                var res: JSONObject? = null
+                var err: String? = null
+                try {
+                    res = JSONObject(bridge.callAttr("start_job", p.toString(),
+                        filesDir.absolutePath).toString())
+                } catch (e: Exception) {
+                    err = e.message ?: e.toString()
+                }
+                ui.post {
+                    try {
+                        val r = res
+                        if (r != null && r.optBoolean("ok")) pollLoop()
+                        else {
+                            logBox.text = "❌ " + (r?.optString("error", "")?.ifBlank { null }
+                                ?: err ?: "خطا")
+                            runBtn.isEnabled = true; runBtn.text = "🚀  شروع ترجمه"
+                        }
+                    } catch (e: Exception) {
+                        logBox.text = "❌ " + (e.message ?: e.toString())
+                        runBtn.isEnabled = true
+                    }
+                }
+            }.start()
         } catch (e: Exception) {
             logBox.text = "❌ " + (e.message ?: e.toString())
             runBtn.isEnabled = true
         }
     }
 
+    // ⚠ فیکس ANR (v1.21): poll هر ۱.۵ ثانیه روی main thread فراخوانی پایتون
+    // می‌کرد؛ وسط OCR سنگین، GIL/قفل‌ها main را گاهی چندثانیه‌ای نگه
+    // می‌داشتند. حالا poll همیشه در thread بک‌گراند اجرا و فقط نتیجه به UI
+    // پست می‌شود + اگر لاگ عوض نشده باشد TextView اصلاً به‌روز نمی‌شود.
+    private val pollExec = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var lastLogTxt = ""
+
     private fun pollLoop() {
-        ui.postDelayed({
+        pollExec.execute {
+            var st: JSONObject? = null
+            var err: String? = null
             try {
-                val st = JSONObject(bridge.callAttr("poll").toString())
-                setLog(st.optString("log", ""))
-                if (st.optBoolean("done")) {
-                    runBtn.isEnabled = true
-                    runBtn.text = "🚀  شروع ترجمه"
-                    showResults(st)
-                } else pollLoop()
+                st = JSONObject(bridge.callAttr("poll").toString())
             } catch (e: Exception) {
-                logBox.text = "❌ poll: " + (e.message ?: e.toString())
-                runBtn.isEnabled = true
+                err = e.message ?: e.toString()
             }
-        }, 1500)
+            ui.post {
+                try {
+                    val s = st
+                    if (s == null) {
+                        logBox.text = "❌ poll: $err"
+                        runBtn.isEnabled = true
+                        runBtn.text = "🚀  شروع ترجمه"
+                        return@post
+                    }
+                    val lg = s.optString("log", "")
+                    if (lg != lastLogTxt) {
+                        lastLogTxt = lg
+                        setLog(lg)
+                    }
+                    if (s.optBoolean("done")) {
+                        runBtn.isEnabled = true
+                        runBtn.text = "🚀  شروع ترجمه"
+                        showResults(s)
+                    } else ui.postDelayed({ pollLoop() }, 1500)
+                } catch (e: Exception) {
+                    logBox.text = "❌ poll: " + (e.message ?: e.toString())
+                    runBtn.isEnabled = true
+                }
+            }
+        }
     }
 
     private fun resBtn(text: String, primary: Boolean, onClick: () -> Unit): Button =

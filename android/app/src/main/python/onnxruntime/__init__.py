@@ -145,6 +145,15 @@ def _jmap_to_dict(m):
         while it.hasNext():
             e = it.next()
             out[str(e.getKey())] = str(e.getValue())
+        if out:
+            return out
+    except Exception:
+        pass
+    try:
+        # فال‌بک — Set<Entry>.toArray() و خواندن دستی هر Entry
+        arr = m.entrySet().toArray()
+        for e in list(arr):
+            out[str(e.getKey())] = str(e.getValue())
     except Exception:
         pass
     return out
@@ -286,11 +295,39 @@ class _ModelMeta:
         self.custom_metadata_map = {}
         if sess is None:
             return
+        md = None
         try:
             md = sess.getMetadata()
-            self.custom_metadata_map = _jmap_to_dict(md.getCustomMetadata())
+        except Exception:
+            md = None
+        if md is None:
+            return
+        # ⚠ باگ واقعی دستگاه (v1.20): custom_metadata_map خالی برمی‌گشت →
+        # have_key() False → rapidocr دیکشنری اشتباه ppocr_keys_v1 را برای
+        # مدل PP-OCRv6 (۱۸۷۱۰ کلاس!) دانلود و استفاده کرد → IndexError در
+        # CTC decode → «موتور قدیمی» (که نصب نیست) → صفرِ OCR.
+        # پس متادیتا را با چند استراتژی می‌خوانیم:
+        cm = None
+        try:
+            cm = md.getCustomMetadata()          # مسیر ۱ — متد استاندارد
+        except Exception:
+            cm = None
+        if cm is None:
+            try:
+                cm = md.customMetadata            # مسیر ۲ — فیلد عمومی
+            except Exception:
+                cm = None
+        if cm is not None:
+            self.custom_metadata_map = _jmap_to_dict(cm)
+        try:
             self.producer_name = str(md.getProducerName() or "")
+        except Exception:
+            pass
+        try:
             self.graph_name = str(md.getGraphName() or "")
+        except Exception:
+            pass
+        try:
             self.description = str(md.getDescription() or "")
         except Exception:
             pass

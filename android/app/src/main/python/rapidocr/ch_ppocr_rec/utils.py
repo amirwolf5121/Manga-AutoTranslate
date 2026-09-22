@@ -110,9 +110,20 @@ class CTCLabelDecode:
             if len(conf_list) == 0:
                 conf_list = [0]
 
-            char_list = [
-                self.character[text_id] for text_id in token_indices[selection]
-            ]
+            char_list = []
+            for text_id in token_indices[selection]:
+                # ⚠ گارد اندروید (v1.21): اگر اندیس CTC از طول دیکشنری بیرون
+                # بزند (مدل چندزبانه + dict اشتباه) قبلاً IndexError می‌داد و
+                # کل فاز OCR را می‌کشت. حالا به «?» ایمن می‌شود.
+                try:
+                    tid = int(text_id)
+                except Exception:
+                    char_list.append("?")
+                    continue
+                if 0 <= tid < len(self.character):
+                    char_list.append(self.character[tid])
+                else:
+                    char_list.append("?")
             text = "".join(char_list)
 
             result_list.append((text, np.mean(conf_list).round(5).tolist()))
