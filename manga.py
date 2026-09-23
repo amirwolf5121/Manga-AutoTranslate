@@ -8,7 +8,7 @@ from __future__ import annotations
 # جایگزین نمی‌کرد و همهٔ فیکس‌های v1.23/v1.24/v1.25 (لامای خودکار، گیت رم، …)
 # هرگز به گوشی کاربر نمی‌رسیدند! از این به بعد با هر ریلیس الزاماً bump شود
 # (فیکس Kotlin، مقایسهٔ MD5، هم اضافه شد تا این فراموشی دیگر بی‌اثر باشد).
-APP_VER = "1.26"
+APP_VER = "1.27"
 
 DEFAULT_SYSTEM_INSTRUCTION_STYLE = """
 تو مترجم مانگا و مانهوا به فارسی گفتاری ایرانی هستی. کار تو دوبله است، نه ترجمه لغت‌به‌لغت.
@@ -2769,9 +2769,36 @@ class MangaTranslator:
                 text = line[1][0].strip()
                 conf = line[1][1]
 
-                dx = poly[1][0] - poly[0][0]
-                dy = poly[1][1] - poly[0][1]
-                angle = float(np.degrees(np.arctan2(dy, dx)))
+                # 🩹 v1.27 — «برعکس چرخیده» روی گوشی: زاویه از لبهٔ
+                # pts[0]→pts[1] گرفته می‌شد که (۱) با ML Kit کادر محوری است →
+                # همیشه ۰° و متنِ کج تخت رندر می‌شد، (۲) با RapidOCR ترتیبِ
+                # گوشه‌ها برای متنِ کج عوض می‌شود → علامت برعکس. حالا ضلعِ
+                # بلندِ minAreaRect + کراس‌چکِ شیبِ جوهرِ برش (خوشه‌خطی)؛
+                # اگر quad و جوهر علامتِ مخالفِ مطمئن دارند، جوهر مبنا است
+                # (quad ممکن است کمانِ لبهٔ حباب را هم گرفته باشد).
+                angle = MangaTranslator._poly_long_side_angle(poly)
+                try:
+                    # پدِ کوچک (۲px): پدِ بزرگ‌تر کمانِ لبهٔ حباب را واردِ برشِ
+                    # جوهر می‌کند و شیب را آلوده می‌سازد («Hey» +۱۴ کاذب).
+                    _px1 = int(float(np.min(poly[:, 0]))) - 2
+                    _py1 = int(float(np.min(poly[:, 1]))) - 2
+                    _px2 = int(float(np.max(poly[:, 0]))) + 2
+                    _py2 = int(float(np.max(poly[:, 1]))) + 2
+                    _ph, _pw = image.shape[:2]
+                    _cx1, _cy1 = max(0, _px1), max(0, _py1)
+                    _cx2, _cy2 = min(_pw, _px2), min(_ph, _py2)
+                    if _cx2 - _cx1 >= 40 and _cy2 - _cy1 >= 14:
+                        a_ink = MangaTranslator._ink_slant_angle(
+                            image[_cy1:_cy2, _cx1:_cx2])
+                        if abs(angle) < 6.0:
+                            if abs(a_ink) >= 6.0:
+                                angle = a_ink
+                        elif (a_ink != 0.0
+                              and (a_ink > 0.0) != (angle > 0.0)
+                              and abs(a_ink) >= 8.0):
+                            angle = a_ink
+                except Exception:
+                    pass
 
                 if not text or conf < self.min_confidence or set(text).issubset(PUNCTUATION_SET):
                     continue
@@ -3424,8 +3451,12 @@ class MangaTranslator:
         text = re.sub(r"\s{2,}", " ", text).strip()
         text = re.sub(r"\b(\w{2,})\s+\1\b", r"\1", text, flags=re.IGNORECASE)
 
-        angles = [detections[i].get("angle", 0.0) for i in kept_idxs] or [0.0]
-        avg_angle = float(np.mean(angles)) if angles else 0.0
+        angles = [float(detections[i].get("angle", 0.0) or 0.0) for i in kept_idxs] or [0.0]
+        # 🩹 v1.27 — میانگینِ سادهٔ زاویهٔ صفرِ خطوطِ تختِ وسطِ بلوکِ کج،
+        # زاویهٔ واقعی را نصف می‌کرد ([0, 0, −۲۰] → −۶.۷) → میانهٔ فقطِ
+        # زاویه‌های معنادار (|a|≥۳)؛ اگر هیچ‌کدام نبود → تخت.
+        _nz = [a for a in angles if abs(a) >= 3.0]
+        avg_angle = float(np.median(_nz)) if _nz else 0.0
         region_kind = MangaTranslator._classify_text(text)
 
         regions.append(
@@ -4104,20 +4135,27 @@ class MangaTranslator:
                     print(f"  [!] LaMa failed ({e}); using OpenCV for this crop.")
                     result = None
             if result is None:
-                # 🩹 v1.26 — «حروفش بپاکه، مربع نکش»: اول ماسک به خودِ حروف
-                # باریک می‌شود (پیکسل‌های جوهر داخل ناحیهٔ ماسک) تا Telea فقط
-                # شکافِ حروف را بازسازی کند و مربعِ لکه‌ای روی بافت نسازد؛
-                # اگر رفاینامد، ماسک قبلی ضخیم و بسته می‌شود تا شبحِ حرف
-                # بازسازی نشود («متن جا نذاره»).
-                _refined = self._glyph_refine_mask(crop_img, crop_msk)
-                if _refined is not None:
-                    crop_msk = _refined
+                # 🩹 v1.27 — «مربع نکش، حروف کامل پاک شوند»: اول پرکردنِ صافِ
+                # پس‌زمینه روی خودِ ماسک (چندضلعی/خطِ متن) — نه Teleaِ توپر و
+                # نه شبحِ حروف. فقط اگر نشست، رفاین حرف‌محور/Telea مثل قبل.
+                _sm = self._smooth_bg_fill(crop_img, crop_msk)
+                if _sm is not None:
+                    result = _sm
+                    method = "OpenCV"
                 else:
-                    _oc_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-                    crop_msk = cv2.dilate(crop_msk, _oc_k, iterations=1)
-                    crop_msk = cv2.morphologyEx(crop_msk, cv2.MORPH_CLOSE, _oc_k)
-                result = self._opencv_inpaint_hq(crop_img, crop_msk)
-                method = "OpenCV"
+                    _refined = self._glyph_refine_mask(crop_img, crop_msk)
+                    if _refined is not None:
+                        crop_msk = _refined
+                        _sm2 = self._smooth_bg_fill(crop_img, crop_msk)
+                        if _sm2 is not None:
+                            result = _sm2
+                            method = "OpenCV"
+                    if result is None:
+                        _oc_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+                        crop_msk = cv2.dilate(crop_msk, _oc_k, iterations=1)
+                        crop_msk = cv2.morphologyEx(crop_msk, cv2.MORPH_CLOSE, _oc_k)
+                        result = self._opencv_inpaint_hq(crop_img, crop_msk)
+                        method = "OpenCV"
             mm = crop_msk > 0
 
             cleaned[cy0:cy1, cx0:cx1][mm] = result[mm]
@@ -4136,8 +4174,8 @@ class MangaTranslator:
         try:
             m0 = (mask > 0).astype(np.uint8)
             area0 = int(m0.sum())
-            if area0 < 80 or area0 > 0.60 * mask.size:
-                return None  # خیلی ریز بی‌اثر است؛ خیلی بزرگ یعنی پاک‌سازیِ کلِ داخل
+            if area0 < 80:
+                return None  # خیلی ریز بی‌اثر است
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             bg = cv2.medianBlur(gray, 31)
             diff = gray.astype(np.int16) - bg.astype(np.int16)
@@ -4149,8 +4187,12 @@ class MangaTranslator:
                 ink, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1
             )
             cov = float(np.count_nonzero(ink)) / float(area0)
+            # 🩹 v1.27 — ماسک‌های بزرگ (داخلِ حباب / چندضلعیِ متنِ کج) هم رفاین
+            # می‌شوند تا Telea مربعِ توپر نسازد («مربع نکش، حروف را پاک کن»)؛
+            # رد فقط وقتی که جوهر ≈ خودِ ماسک است (رفای بی‌معنا) یا جوهرِ
+            # معناداری داخلِ زون نیست.
             if cov < 0.12 or cov > 0.92:
-                return None  # کنتراست کم/رفای ناموفق، یا ماسک هم‌ارز جوهر است
+                return None
             return ink
         except Exception:
             return None
@@ -4164,6 +4206,41 @@ class MangaTranslator:
         out = cv2.inpaint(image, m, inpaintRadius=radius, flags=cv2.INPAINT_TELEA)
         out[m == 0] = image[m == 0]
         return out
+
+    @staticmethod
+    def _smooth_bg_fill(crop_img: np.ndarray, crop_msk: np.ndarray,
+                        k1: int = 51, k2: int = 21, feather: int = 3):
+        """v1.27 - mask-fill from local median background (two-pass blur).
+
+        Telea creates cloudy smears on gradients/multi-material backgrounds
+        and glyph-level refine leaves ghost outlines of the white letter
+        strokes. The two-pass local median (51 then 21) swallows dense ink
+        and the white outline, rebuilding a smooth background continuation:
+        "no solid rectangles, letters fully erased".
+        Returns None -> previous paths (refine / Telea).
+        """
+        try:
+            if crop_img is None or crop_msk is None:
+                return None
+            m0 = (crop_msk > 0).astype(np.uint8) * 255
+            if not m0.any() or m0.all():
+                return None
+            h_c, w_c = crop_img.shape[:2]
+            k_a = k1 if k1 % 2 == 1 else k1 + 1
+            k_b = k2 if k2 % 2 == 1 else k2 + 1
+            if k_a >= min(h_c, w_c):
+                k_a = max(3, (min(h_c, w_c) - 1) // 2 * 2 - 1)
+            if k_b >= min(h_c, w_c):
+                k_b = max(3, (min(h_c, w_c) - 1) // 2 * 2 - 1)
+            m_d = cv2.dilate(m0, np.ones((2 * feather + 1, 2 * feather + 1), np.uint8))
+            bg = cv2.medianBlur(crop_img, k_a)
+            bg = cv2.medianBlur(bg, k_b)
+            alpha = cv2.GaussianBlur(m_d, (7, 7), 0).astype(np.float32) / 255.0
+            af = alpha[..., None]
+            out = crop_img.astype(np.float32) * (1.0 - af) + bg.astype(np.float32) * af
+            return np.clip(out, 0, 255).astype(np.uint8)
+        except Exception:
+            return None
 
     def _scrub_dark_residuals(self, image: np.ndarray, mask: np.ndarray) -> np.ndarray:
         if mask is None or not np.any(mask):
@@ -6307,12 +6384,24 @@ class MangaTranslator:
                         else:
                             joined = (tb + " " + ta).strip()
                         joined = re.sub(r"\s{2,}", " ", joined)
+                    # 🩹 v1.27 — ادغامِ زاویهٔ دو ناحیه: صفرِ یکی نباید زاویهٔ
+                    # دیگری را نصف کند؛ علامتِ مخالف → بزرگ‌تر از نظرِ قدرِ مطلق.
+                    _aa = float(cur.angle or 0.0)
+                    _ba = float(b.angle or 0.0)
+                    if abs(_aa) < 3.0:
+                        _ang = _ba
+                    elif abs(_ba) < 3.0:
+                        _ang = _aa
+                    elif (_aa > 0.0) == (_ba > 0.0):
+                        _ang = (_aa + _ba) / 2.0
+                    else:
+                        _ang = _aa if abs(_aa) >= abs(_ba) else _ba
                     cur = TextRegion(
                         id=cur.id,
                         boxes=list(cur.boxes or []) + list(b.boxes or []),
                         source_text=joined,
                         rect=(nx0, ny0, nx1 - nx0, ny1 - ny0),
-                        angle=((cur.angle or 0.0) + (b.angle or 0.0)) / 2.0,
+                        angle=_ang,
                         kind=cur.kind if cur.kind == "dialogue" else b.kind,
                         ocr_polys=list(getattr(cur, "ocr_polys", None) or [])
                         + list(getattr(b, "ocr_polys", None) or []),
@@ -6327,40 +6416,134 @@ class MangaTranslator:
         return merged
 
     @staticmethod
+    def _poly_long_side_angle(pts) -> float:
+        """🩹 v1.27 — زاویهٔ ضلعِ بلندِ minAreaRect — مستقل از ترتیبِ گوشه‌ها.
+
+        قرارداد سراسریِ زاویه در کل موتور: **منفی = سمتِ راست بالاتر**
+        (هم‌خوان با rotate(-angle) در رندر). قبلاً لبهٔ pts[0]→pts[1] مبنا بود
+        که به ترتیبِ گوشه‌های poly وابسته بود و علامت را برعکس می‌کرد
+        (باگ «برعکس چرخیده»). اگر ضلعِ بلند عمودی باشد → 0.0.
+        """
+        try:
+            pts = np.asarray(pts, dtype=np.float32).reshape(-1, 2)
+        except Exception:
+            return 0.0
+        if pts.shape[0] < 2:
+            return 0.0
+        try:
+            box = cv2.boxPoints(cv2.minAreaRect(pts.astype(np.float32)))
+        except Exception:
+            return 0.0
+        best_a, best_len = 0.0, 0.0
+        for k in range(4):
+            p0, p1 = box[k], box[(k + 1) % 4]
+            dx, dy = float(p1[0] - p0[0]), float(p1[1] - p0[1])
+            ln = float(np.hypot(dx, dy))
+            if ln > best_len:
+                best_len = ln
+                if dx < 0.0:
+                    dx, dy = -dx, -dy
+                best_a = float(np.degrees(np.arctan2(dy, dx)))
+        if abs(best_a) > 45:
+            return 0.0
+        return best_a
+
+    @staticmethod
+    def _ink_slant_angle(crop_bgr) -> float:
+        """🧩 v1.27 - شیبِ متن از خودِ جوهرِ برش — پروفایلِ تصویر (projection profile).
+
+        برای OCRهایی که کادرِ محوری می‌دهند (ML Kit روی اندروید) poly هیچ
+        نشانه‌ای از شیب ندارد. رگرسیونِ ستونی/مرکزِ مؤلفه‌ها با بلوکِ
+        چندخطیِ پله‌ای، لوگو و لبهِ حباب علامتِ برعکس می‌داد
+        ("برعکس چرخیده"). پروفایلِ تصویری مقاوم است: برای هر زاویهِ
+        کاندید، جوهر را در ردیف‌های y−tan(θ)x باریز می‌کنیم؛ زاویه‌ای
+        که تیزترین تفکیکِ خطوط را بدهد مبناست — برای خطوط موازی
+        (حتی پله‌ای) دقیق است و به تقسیم حروف نیاز ندارد.
+        قرارداد: منفی = سمتِ راست بالاتر.
+        """
+        try:
+            if crop_bgr is None or getattr(crop_bgr, "size", 0) == 0:
+                return 0.0
+            h_c, w_c = crop_bgr.shape[:2]
+            if w_c < 40 or h_c < 14:
+                return 0.0
+            g = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+            med = float(np.median(g))
+            ink = (g < max(60, med - 45)).astype(np.uint8)
+            if float(ink.mean()) < 0.010 or float(ink.mean()) > 0.60:
+                return 0.0
+            # حذف مؤلفه‌های نویز/بلاب بزرگ (لوگٌسایه) و خط لبه‌چسبیدهِ حباب
+            n, lab, st, _cents = cv2.connectedComponentsWithStats(ink, connectivity=8)
+            crop_area = float(max(1.0, h_c * w_c))
+            clean = np.zeros_like(ink)
+            for i in range(1, n):
+                a_ = int(st[i, cv2.CC_STAT_AREA])
+                if a_ < 12 or a_ > 0.15 * crop_area:
+                    continue
+                x_c = int(st[i, cv2.CC_STAT_LEFT])
+                y_c = int(st[i, cv2.CC_STAT_TOP])
+                bw_ = int(st[i, cv2.CC_STAT_WIDTH])
+                bh_ = int(st[i, cv2.CC_STAT_HEIGHT])
+                touches = ((x_c <= 0) + (y_c <= 0)
+                           + (x_c + bw_ >= w_c) + (y_c + bh_ >= h_c))
+                aspect = max(bw_, bh_) / max(1.0, float(min(bw_, bh_)))
+                # پرشدگیِ کم = کمانِ نازک/خطِ ساختی (نه حرفِ توپر)
+                if a_ < 0.25 * float(max(1, bw_ * bh_)):
+                    continue
+                if touches >= 2 or (touches >= 1 and aspect > 3.0):
+                    continue
+                if touches == 1:
+                    # کمانِ حباب در طولِ لبه می‌دود؛ حرفِ سرِ خط فقط نقطه‌ای
+                    # لمس می‌کند → کشیدگی روی همان لبه = حاشیه، نه حرف
+                    border_span = 0.0
+                    if x_c <= 0 or x_c + bw_ >= w_c:
+                        border_span = bh_ / float(h_c)
+                    else:
+                        border_span = bw_ / float(w_c)
+                    if border_span > 0.45 or aspect > 1.9:
+                        continue
+                clean[lab == i] = 1
+            if float(clean.mean()) < 0.008:
+                return 0.0
+            ys_, xs_ = np.nonzero(clean)
+            if len(ys_) < 60:
+                return 0.0
+            ys_f = ys_.astype(np.float64)
+            xs_f = xs_.astype(np.float64)
+
+            def _score(theta_deg: float) -> float:
+                t = float(np.tan(np.radians(theta_deg)))
+                rows = ys_f - t * xs_f
+                idx = (rows - rows.min()).astype(np.int32)
+                hist = np.bincount(idx)
+                hf = hist.astype(np.float64)
+                return float(np.dot(hf, hf))
+
+            # coarse: step 3 deg in [-45, 45] — then fine: +-3 deg step 0.5
+            best_t, best_s = 0.0, -1.0
+            for td in range(-45, 46, 3):
+                s_ = _score(float(td))
+                if s_ > best_s:
+                    best_s, best_t = s_, float(td)
+            for td in np.arange(best_t - 3.0, best_t + 3.01, 0.5):
+                s_ = _score(float(td))
+                if s_ > best_s:
+                    best_s, best_t = s_, float(td)
+            a = float(best_t)
+            if abs(a) < 6.0 or abs(a) > 45.0:
+                return 0.0
+            return a
+        except Exception:
+            return 0.0
+
+    @staticmethod
     def _estimate_angle_from_polys(polys) -> float:
-
-
         angs: List[float] = []
         for p in list(polys or []):
-            try:
-                pts = np.asarray(p, dtype=np.float32).reshape(-1, 2)
-            except Exception:
-                continue
-            if pts.shape[0] < 2:
-                continue
-            # 🩹 v1.26 — قبلاً جهتِ لبهٔ pts[0]→pts[1] مبنا بود که به ترتیبِ
-            # گوشه‌های poly وابسته است؛ تشخیص‌دهنده برای متنِ کج ترتیب را عوض
-            # می‌کند → علامتِ زاویه برعکس می‌شد (باگ «چرخش درست نیست»: «Hey»
-            # بالا‌رونده با angle=+14 رندرِ پایین‌رونده می‌گرفت). حالا ضلعِ
-            # بلندِ minAreaRect مبنا است — مستقل از ترتیبِ گوشه‌ها؛ قرارداد:
-            # منفی = سمت راست بالاتر (هم‌خوان با rotate(-angle) رندر).
-            try:
-                box = cv2.boxPoints(cv2.minAreaRect(pts.astype(np.float32)))
-            except Exception:
-                continue
-            best_a, best_len = None, 0.0
-            for k in range(4):
-                p0, p1 = box[k], box[(k + 1) % 4]
-                dx, dy = float(p1[0] - p0[0]), float(p1[1] - p0[1])
-                ln = float(np.hypot(dx, dy))
-                if ln > best_len:
-                    best_len = ln
-                    if dx < 0.0:
-                        dx, dy = -dx, -dy
-                    best_a = float(np.degrees(np.arctan2(dy, dx)))
-            if best_a is None or abs(best_a) > 45:
-                continue
-            angs.append(best_a)
+            # 🩹 v1.27 — ضلعِ بلندِ minAreaRect مبنا است؛ ۰ درجهٔ واقعی هم
+            # وارد میانه می‌شود تا خطوطِ تختِ داخلِ بلوکِ کج زاویه را خراب نکنند
+            # (فیلترِ |a|>45 داخلِ هلپر است).
+            angs.append(MangaTranslator._poly_long_side_angle(p))
         if not angs:
             return 0.0
         return float(np.median(angs))

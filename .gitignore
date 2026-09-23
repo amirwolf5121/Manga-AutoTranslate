@@ -58,3 +58,4 @@ android/app/src/main/python/_vendor_tmp/
 # مدل‌های دانلودشدهٔ محلی برای تست (نباید کامیت شوند)
 det_models/
 rapidocr_models/
+lama/
