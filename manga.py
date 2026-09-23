@@ -8,7 +8,7 @@ from __future__ import annotations
 # جایگزین نمی‌کرد و همهٔ فیکس‌های v1.23/v1.24/v1.25 (لامای خودکار، گیت رم، …)
 # هرگز به گوشی کاربر نمی‌رسیدند! از این به بعد با هر ریلیس الزاماً bump شود
 # (فیکس Kotlin، مقایسهٔ MD5، هم اضافه شد تا این فراموشی دیگر بی‌اثر باشد).
-APP_VER = "1.29"
+APP_VER = "1.30"
 
 DEFAULT_SYSTEM_INSTRUCTION_STYLE = """
 تو مترجم مانگا و مانهوا به فارسی گفتاری ایرانی هستی. کار تو دوبله است، نه ترجمه لغت‌به‌لغت.
@@ -4103,6 +4103,7 @@ class MangaTranslator:
         lama = None
         lama_loaded = False
         counts = {"flat": 0, "LaMa": 0, "OpenCV": 0}
+        _budget_logged = False
         # 🩹 v1.29 — بودجهٔ LaMa روی گوشی: هر فراخوانیِ ۵۱۲×۵۱۲ روی CPUِ موبایل
         # چند ثانیه است؛ بدون سقف، صفحاتِ پرماسک دقیقه‌ها معطلِ لاما می‌ماندند
         # («استخراج تو گوشی خیلی وقت گیره با پاکسازیش»). بعد از سقف،
@@ -4118,6 +4119,14 @@ class MangaTranslator:
             crop_msk[by0-cy0:ey1-cy0, bx0-cx0:ex1-cx0] = mask[by0:ey1, bx0:ex1]
             result = self._flat_fill_cluster(crop_img, crop_msk)
             method = "flat"
+            # 🩹 v1.30 — پرکردنِ صافِ «موفق» روی تُنِ واقعی هم لکهٔ صافِ بی‌بافت
+            # جا می‌گذارد (فیتِ چندجمله‌ای نقطه‌های تُن را به‌عنوان پرتِ رد می‌کند
+            # و تختِ پایه را پر می‌کند) → روی بافتِ قوی، نتیجه دور ریخته شود تا
+            # لاما/مسیرِ بافت‌آگاه اجرا شود. آستانهٔ «قوی» تا نویزِ JPEGِ کاغذِ
+            # ساده را بافت‌دار نشمارد.
+            if (result is not None
+                    and self._bg_is_textured(crop_img, crop_msk, strong=True)):
+                result = None
             if result is None and getattr(self, "use_lama", False) and not lama_loaded:
                 lama_loaded = True
                 lama = self._get_lama()
@@ -4125,8 +4134,12 @@ class MangaTranslator:
                 # 🩹 v1.28 — LaMa روی CPUِ گوشی سنگین است؛ خوشهٔ متراکم
                 # (پرشده از متن) با پرکردنِ صافِ OpenCV هم تمیز می‌شود و
                 # چند برابر سریع‌تر — «استخراج خیلی وقت گیره».
+                # 🩹 v1.30 — آستانهٔ ۰.۳۰ خیلی تهاجمی بود (حباب‌های پرمتن
+                # معمولاً از این پرترند → لاما عملاً اجرا نمی‌شد و کاربر
+                # «یک دونه لاما بعدش OpenCV» می‌دید) → ۰.۴۲ فقط بلوک‌های
+                # واقعاً توپر را رد می‌کند.
                 _dense_cpu = (_IS_ANDROID
-                              and float((crop_msk > 0).mean()) > 0.30)
+                              and float((crop_msk > 0).mean()) > 0.42)
                 if not _dense_cpu:
                   _lama_budget -= 1
                   try:
@@ -4147,6 +4160,12 @@ class MangaTranslator:
                     # کنارِ لوگو و تُنِ تیره) مردود می‌شود — اگر پرشدگیِ داخلِ ماسک
                     # به‌مراتب تیره‌تر از کاغذِ اطراف باشد، لاما رد و پرکردنِ صاف
                     # جایگزین می‌شود. مرجع: روشن‌ترین پیکسل‌های حلقهٔ اطراف.
+                    # 🩹 v1.30 — آستانهٔ «۳۵ واحد تیره‌تر» تُن/سایه/کاغذِ کرمِ سالم
+                    # را هم رد می‌کرد (پرشدگیِ درستِ لاما روی تُن ~۱۲۰-۱۸۰ است ولی
+                    # مرجع فقط پیکسل‌های روشنِ ~۲۲۰ بود) → کاربر «یک دونه لاما
+                    # اجرا می‌شه بعد چنج می‌زنه به OpenCV» می‌دید. حالا فقط لکهٔ
+                    # واقعاً سیاه مردود است: تیرگیِ مطلق < ۱۱۵ «و» حداقل ۵۵ واحد
+                    # تیره‌تر از کاغذِ اطراف.
                     try:
                         _fm = (cv2.dilate(crop_msk, lama_kernel) > 0)
                         _ring_m = (cv2.dilate(
@@ -4159,7 +4178,7 @@ class MangaTranslator:
                             if _bright.size >= max(50, int(0.02 * _bg_px.size)):
                                 _bg_med = float(np.median(_bright))
                                 _fill_med = float(np.median(_g[_fm]))
-                                if _fill_med < _bg_med - 35.0:
+                                if _fill_med < 115.0 and _fill_med < _bg_med - 55.0:
                                     print(f"  [!] خروجی LaMa لکهٔ تیره گذاشت "
                                           f"({_fill_med:.0f} در برابر کاغذ {_bg_med:.0f}) "
                                           f"→ پرکردنِ صاف برای این خوشه")
@@ -4172,28 +4191,49 @@ class MangaTranslator:
                   except Exception as e:
                     print(f"  [!] LaMa failed ({e}); using OpenCV for this crop.")
                     result = None
+            elif (result is None and lama is not None
+                  and _lama_budget <= 0 and not _budget_logged):
+                # 🩹 v1.30 — شفافیت: وقتی بودجهٔ LaMa تمام می‌شود لاگ بدهد تا
+                # معلوم باشد چرا بقیهٔ خوشه‌ها با پرکردن/OpenCV تمیز شدند.
+                _budget_logged = True
+                print("  [!] بودجهٔ LaMa این صفحه پر شد → بقیهٔ خوشه‌ها با "
+                      "پرکردنِ سریع/OpenCV ادامه می‌یابد")
             if result is None:
-                # 🩹 v1.27 — «مربع نکش، حروف کامل پاک شوند»: اول پرکردنِ صافِ
-                # پس‌زمینه روی خودِ ماسک (چندضلعی/خطِ متن) — نه Teleaِ توپر و
-                # نه شبحِ حروف. فقط اگر نشست، رفاین حرف‌محور/Telea مثل قبل.
-                _sm = self._smooth_bg_fill(crop_img, crop_msk)
-                if _sm is not None:
-                    result = _sm
-                    method = "OpenCV"
-                else:
+                # 🩹 v1.30 — «پاکسازی OpenCV بدتر شده»: پرکردنِ صاف (میانهٔ
+                # دومرحله‌ای) روی اسکرین‌تون/بافت، لکهٔ صافِ بی‌بافت جا می‌گذاشت.
+                # اگر حلقهٔ اطراف بافتِ معنادار دارد → اول رفاینِ حرف‌محور +
+                # Teleaِ نازک (جوهرِ حروف برداشته می‌شود ولی بافتِ بینِ حروف
+                # سالم می‌ماند)؛ کاغذِ ساده → پرکردنِ صاف مثل v1.27.
+                if self._bg_is_textured(crop_img, crop_msk):
                     _refined = self._glyph_refine_mask(crop_img, crop_msk)
                     if _refined is not None:
-                        crop_msk = _refined
-                        _sm2 = self._smooth_bg_fill(crop_img, crop_msk)
-                        if _sm2 is not None:
-                            result = _sm2
+                        _tl = self._opencv_inpaint_hq(crop_img, _refined)
+                        if _tl is not None:
+                            crop_msk = _refined
+                            result = _tl
                             method = "OpenCV"
-                    if result is None:
-                        _oc_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-                        crop_msk = cv2.dilate(crop_msk, _oc_k, iterations=1)
-                        crop_msk = cv2.morphologyEx(crop_msk, cv2.MORPH_CLOSE, _oc_k)
-                        result = self._opencv_inpaint_hq(crop_img, crop_msk)
+                if result is None:
+                    # 🩹 v1.27 — «مربع نکش، حروف کامل پاک شوند»: اول پرکردنِ صافِ
+                    # پس‌زمینه روی خودِ ماسک (چندضلعی/خطِ متن) — نه Teleaِ توپر و
+                    # نه شبحِ حروف. فقط اگر نشست، رفاین حرف‌محور/Telea مثل قبل.
+                    _sm = self._smooth_bg_fill(crop_img, crop_msk)
+                    if _sm is not None:
+                        result = _sm
                         method = "OpenCV"
+                    else:
+                        _refined = self._glyph_refine_mask(crop_img, crop_msk)
+                        if _refined is not None:
+                            crop_msk = _refined
+                            _sm2 = self._smooth_bg_fill(crop_img, crop_msk)
+                            if _sm2 is not None:
+                                result = _sm2
+                                method = "OpenCV"
+                        if result is None:
+                            _oc_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+                            crop_msk = cv2.dilate(crop_msk, _oc_k, iterations=1)
+                            crop_msk = cv2.morphologyEx(crop_msk, cv2.MORPH_CLOSE, _oc_k)
+                            result = self._opencv_inpaint_hq(crop_img, crop_msk)
+                            method = "OpenCV"
             mm = crop_msk > 0
 
             cleaned[cy0:cy1, cx0:cx1][mm] = result[mm]
@@ -4201,6 +4241,32 @@ class MangaTranslator:
 
         print(f"  - Cleanup: {counts}")
         return cleaned
+
+    @staticmethod
+    def _bg_is_textured(crop_img: np.ndarray, crop_msk: np.ndarray,
+                        strong: bool = False) -> bool:
+        """🩹 v1.30 — تشخیص بافت/تُنِ حلقهٔ اطراف ماسک (اسکرین‌تون، هاشور، نویز).
+
+        پرکردنِ صاف روی این پس‌زمینه‌ها لکهٔ صافِ بدونِ بافت جا می‌گذارد
+        (گزارش «پاکسازی OpenCV بدتر شده»)؛ برای آن‌ها Teleaِ حرف‌محورِ نازک
+        مناسب‌تر است. کاغذِ ساده → False (پرکردنِ صاف بهترین است).
+        strong=True → آستانهٔ بالاتر (تُن/بافتِ واقعی، نه نویزِ JPEG) — برای
+        دور ریختنِ نتیجهٔ پرکردنِ صافِ موفق روی تُن.
+        """
+        try:
+            m = crop_msk > 0
+            ring = (cv2.dilate(crop_msk, np.ones((9, 9), np.uint8)) > 0) & (~m)
+            if int(np.count_nonzero(ring)) < 60:
+                return False
+            g = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
+            rf = g[ring].astype(np.float32)
+            t_std, t_lap = (25.0, 8.0) if strong else (17.0, 5.0)
+            if float(np.std(rf)) > t_std:
+                return True
+            lap = np.abs(cv2.Laplacian(g, cv2.CV_32F))
+            return bool(float(np.mean(lap[ring])) > t_lap)
+        except Exception:
+            return False
 
 
     def _glyph_refine_mask(self, image: np.ndarray, mask: np.ndarray) -> Optional[np.ndarray]:
@@ -4221,6 +4287,22 @@ class MangaTranslator:
             ink = ((np.abs(diff) > 26) & (zone > 0)).astype(np.uint8) * 255
             ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
             ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+            # 🩹 v1.30 — تُن/اسکرین‌تون: نقطه‌های ریزِ تُن جوهرِ حروف نیستند؛
+            # اگر حذف نشوند، dilateِ بعدی کلِ زون را می‌پوشاند (cov>0.92 →
+            # رفاین رد می‌شد → پرکردنِ صاف روی تُن = لکهٔ بی‌بافت، گزارش
+            # «پاکسازی OpenCV بدتر شده»). مؤلفه‌های ریز حذف می‌شوند.
+            try:
+                _n, _lab, _st, _ = cv2.connectedComponentsWithStats(
+                    (ink > 0).astype(np.uint8), connectivity=8)
+                if _n > 1:
+                    _keep = np.zeros_like(ink)
+                    for _i in range(1, _n):
+                        if int(_st[_i, cv2.CC_STAT_AREA]) >= 24:
+                            _keep[_lab == _i] = 255
+                    if int(np.count_nonzero(_keep)) >= 40:
+                        ink = _keep
+            except Exception:
+                pass
             ink = cv2.dilate(
                 ink, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1
             )
