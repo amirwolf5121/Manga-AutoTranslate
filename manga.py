@@ -8,7 +8,7 @@ from __future__ import annotations
 # جایگزین نمی‌کرد و همهٔ فیکس‌های v1.23/v1.24/v1.25 (لامای خودکار، گیت رم، …)
 # هرگز به گوشی کاربر نمی‌رسیدند! از این به بعد با هر ریلیس الزاماً bump شود
 # (فیکس Kotlin، مقایسهٔ MD5، هم اضافه شد تا این فراموشی دیگر بی‌اثر باشد).
-APP_VER = "1.27"
+APP_VER = "1.29"
 
 DEFAULT_SYSTEM_INSTRUCTION_STYLE = """
 تو مترجم مانگا و مانهوا به فارسی گفتاری ایرانی هستی. کار تو دوبله است، نه ترجمه لغت‌به‌لغت.
@@ -4103,6 +4103,11 @@ class MangaTranslator:
         lama = None
         lama_loaded = False
         counts = {"flat": 0, "LaMa": 0, "OpenCV": 0}
+        # 🩹 v1.29 — بودجهٔ LaMa روی گوشی: هر فراخوانیِ ۵۱۲×۵۱۲ روی CPUِ موبایل
+        # چند ثانیه است؛ بدون سقف، صفحاتِ پرماسک دقیقه‌ها معطلِ لاما می‌ماندند
+        # («استخراج تو گوشی خیلی وقت گیره با پاکسازیش»). بعد از سقف،
+        # پرکردنِ صافِ سریع (که v1.27 تمیزش کرد) جایگزین می‌شود.
+        _lama_budget = 10 if _IS_ANDROID else 10 ** 9
 
         for bx0, by0, bx1, by1 in self._mask_clusters(mask, pad=3):
             cx0, cy0 = max(0, bx0 - 29), max(0, by0 - 29)
@@ -4116,13 +4121,14 @@ class MangaTranslator:
             if result is None and getattr(self, "use_lama", False) and not lama_loaded:
                 lama_loaded = True
                 lama = self._get_lama()
-            if result is None and lama is not None:
+            if result is None and lama is not None and _lama_budget > 0:
                 # 🩹 v1.28 — LaMa روی CPUِ گوشی سنگین است؛ خوشهٔ متراکم
                 # (پرشده از متن) با پرکردنِ صافِ OpenCV هم تمیز می‌شود و
                 # چند برابر سریع‌تر — «استخراج خیلی وقت گیره».
                 _dense_cpu = (_IS_ANDROID
                               and float((crop_msk > 0).mean()) > 0.30)
                 if not _dense_cpu:
+                  _lama_budget -= 1
                   try:
                     
                     lx0, ly0 = max(0, bx0 - 128), max(0, by0 - 128)
@@ -4137,8 +4143,32 @@ class MangaTranslator:
                     result = result[cy0-ly0:cy1-ly0, cx0-lx0:cx1-lx0]
                     if result.shape != crop_img.shape:
                         raise ValueError("LaMa returned an unexpected image shape")
-                    crop_msk = cv2.dilate(crop_msk, lama_kernel)
-                    method = "LaMa"
+                    # 🩹 v1.29 — «لگه سیاع میزاره»: لکه/دودهٔ خروجی لاما (مخصوصاً
+                    # کنارِ لوگو و تُنِ تیره) مردود می‌شود — اگر پرشدگیِ داخلِ ماسک
+                    # به‌مراتب تیره‌تر از کاغذِ اطراف باشد، لاما رد و پرکردنِ صاف
+                    # جایگزین می‌شود. مرجع: روشن‌ترین پیکسل‌های حلقهٔ اطراف.
+                    try:
+                        _fm = (cv2.dilate(crop_msk, lama_kernel) > 0)
+                        _ring_m = (cv2.dilate(
+                            crop_msk, cv2.getStructuringElement(
+                                cv2.MORPH_ELLIPSE, (31, 31))) > 0) & (~_fm)
+                        if _fm.any() and _ring_m.any():
+                            _g = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
+                            _bg_px = _g[_ring_m]
+                            _bright = _bg_px[_bg_px >= 160.0]
+                            if _bright.size >= max(50, int(0.02 * _bg_px.size)):
+                                _bg_med = float(np.median(_bright))
+                                _fill_med = float(np.median(_g[_fm]))
+                                if _fill_med < _bg_med - 35.0:
+                                    print(f"  [!] خروجی LaMa لکهٔ تیره گذاشت "
+                                          f"({_fill_med:.0f} در برابر کاغذ {_bg_med:.0f}) "
+                                          f"→ پرکردنِ صاف برای این خوشه")
+                                    result = None
+                    except Exception:
+                        pass
+                    if result is not None:
+                        crop_msk = cv2.dilate(crop_msk, lama_kernel)
+                        method = "LaMa"
                   except Exception as e:
                     print(f"  [!] LaMa failed ({e}); using OpenCV for this crop.")
                     result = None
@@ -5975,6 +6005,12 @@ class MangaTranslator:
                     ln = float(np.hypot(dx, dy))
                     if ln > best_len:
                         best_len = ln
+                        # 🩹 v1.29 — جهتِ لبه نرمال شود (dx>0). ترتیبِ گوشه‌های
+                        # cv2.boxPoints بین نسخه‌های OpenCV (PC در برابر vendored
+                        # گوشی) فرق می‌کند؛ بدون نرمال‌سازی، علامتِ زاویهٔ skew روی
+                        # بعضی دستگاه‌ها برعکس می‌شد (گزارش «برعکس میچرخه» با v1.28).
+                        if dx < 0.0:
+                            dx, dy = -dx, -dy
                         best_a = float(np.degrees(np.arctan2(dy, dx)))
                 if best_a > 90:
                     best_a -= 180.0
@@ -6707,6 +6743,38 @@ class MangaTranslator:
                 print(f"    [*] متن کج: [{r.id}] angle={ang:+.1f}° «{(r.source_text or '')[:30]}»")
         return regions
 
+    def _verify_angle_signs(self, image: np.ndarray,
+                            regions: List["TextRegion"]) -> None:
+        """🩹 v1.29 — داورِ نهاییِ علامتِ زاویه (ضدِ «برعکس میچرخه» روی گوشی).
+
+        زنجیرهٔ quad→skew→deskew داخلِ _ocr_crop روی OCRهای کادرمحور (ML Kit)
+        به ترتیبِ گوشه‌های minAreaRect وابسته است که بین نسخه‌های OpenCVِ
+        گوشی و PC فرق می‌کند؛ نتیجه: همان تصویر روی PC درست و روی گوشی
+        برعکس رندر می‌شد (گزارش واقعی کاربر با v1.28). حالا هر ناحیهٔ کج
+        (|angle|>=6) با روشِ جوهرِ پایدار (_ink_slant_angle روی برشِ خودِ
+        ناحیه) راستی‌آزمایی می‌شود؛ اگر جوهر با اطمینان علامتِ مخالف بدهد،
+        جوهر مبنا است. این روش در برات‌فورسِ ۴۴۱ واریانتیِ باکس روی نواحی
+        واقعیِ کاربر بی‌یک‌بارگیِ علامت پایدار بود.
+        """
+        for r in regions:
+            ang = float(getattr(r, "angle", 0.0) or 0.0)
+            if abs(ang) < 6.0:
+                continue
+            try:
+                x, y, w_, h_ = [int(v) for v in r.rect]
+                x1, y1 = max(0, x), max(0, y)
+                x2 = min(int(image.shape[1]), x + max(8, w_))
+                y2 = min(int(image.shape[0]), y + max(8, h_))
+                if x2 - x1 < 40 or y2 - y1 < 14:
+                    continue
+                a_ink = MangaTranslator._ink_slant_angle(image[y1:y2, x1:x2])
+                if abs(a_ink) >= 6.0 and (a_ink > 0.0) != (ang > 0.0):
+                    print(f"    [!] اصلاح علامتِ چرخش [{r.id}]: {ang:+.1f}° → "
+                          f"{a_ink:+.1f}° (راستی‌آزمایی جوهر)")
+                    r.angle = a_ink
+            except Exception:
+                continue
+
     def extract_regions_phase(self, image: np.ndarray) -> Tuple[List[TextRegion], Optional[np.ndarray]]:
         
         h, w = image.shape[:2]
@@ -6738,6 +6806,10 @@ class MangaTranslator:
                     for res in results:
                         all_raw_regions.extend(res)
             unique_regions = self._deduplicate_regions(all_raw_regions)
+
+        # 🩹 v1.29 — داورِ نهاییِ علامتِ زاویه، روی هر دو مسیر (حباب/OCR)
+        if unique_regions:
+            self._verify_angle_signs(image, unique_regions)
 
         if self.reading_order == "rtl":
             unique_regions.sort(key=lambda r: (r.rect[1] // 80, -(r.rect[0] + r.rect[2])))
