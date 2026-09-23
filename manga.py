@@ -2143,7 +2143,9 @@ class MangaTranslator:
                 conf_thresh=self.det_confidence,
                 iou_thresh=0.45,
                 threads=max(1, int(self.max_workers or 2)),
-                multi_scale=True,
+                # 🩹 v1.28 — تشخیصِ چندمقیاس روی CPUِ گوشی چندبرابر کند است؛
+                # فقط روی PC فعال می‌ماند.
+                multi_scale=not _IS_ANDROID,
             )
         except Exception as e:
             print(f"[!] RT-DETR لود نشد ({e}) → OCR تمام‌صفحه (بدون تشخیص حباب)")
@@ -4115,7 +4117,13 @@ class MangaTranslator:
                 lama_loaded = True
                 lama = self._get_lama()
             if result is None and lama is not None:
-                try:
+                # 🩹 v1.28 — LaMa روی CPUِ گوشی سنگین است؛ خوشهٔ متراکم
+                # (پرشده از متن) با پرکردنِ صافِ OpenCV هم تمیز می‌شود و
+                # چند برابر سریع‌تر — «استخراج خیلی وقت گیره».
+                _dense_cpu = (_IS_ANDROID
+                              and float((crop_msk > 0).mean()) > 0.30)
+                if not _dense_cpu:
+                  try:
                     
                     lx0, ly0 = max(0, bx0 - 128), max(0, by0 - 128)
                     lx1, ly1 = min(image.shape[1], bx1 + 128), min(image.shape[0], by1 + 128)
@@ -4131,7 +4139,7 @@ class MangaTranslator:
                         raise ValueError("LaMa returned an unexpected image shape")
                     crop_msk = cv2.dilate(crop_msk, lama_kernel)
                     method = "LaMa"
-                except Exception as e:
+                  except Exception as e:
                     print(f"  [!] LaMa failed ({e}); using OpenCV for this crop.")
                     result = None
             if result is None:
@@ -5776,6 +5784,10 @@ class MangaTranslator:
             scale = max(scale, 1.8)
         if max(h_p, w_p) < 1600:
             scale = max(scale, 2.2)
+        # 🩹 v1.28 — بزرگ‌نماییِ ۲.۲× روی CPUِ گوشی هم حافظه می‌خواهد هم CPU؛
+        # سقفِ ۱.۶× کیفیتِ OCR را حفظ می‌کند ولی چند برابر سریع‌تر است.
+        if _IS_ANDROID:
+            scale = min(scale, 1.6)
 
         if scale > 1.01:
             piece_up = cv2.resize(piece, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
@@ -5786,37 +5798,44 @@ class MangaTranslator:
         detections = self.detect_text(piece_up)
 
         if self.two_pass_ocr:
-            
-            enhanced = self._clahe_enhance(piece_up)
-            detections += self.detect_text(enhanced)
+            # 🩹 v1.28 — «استخراج تو گوشی خیلی وقت گیره»: هر پاسِ OCR اضافه =
+            # یک پاس کامل روی تیکهٔ بزرگ‌نمایی‌شده. روی اندروید اگر پاسِ پایه
+            # متنِ کافی پیدا کرد، واریانت‌های CLAHE-معکوس/سیاه‌سفید/اکstra
+            # حذف می‌شوند (روی PC مثل قبل). واریانت‌ها فقط وقتی پایه چیزی
+            # پیدا نکرد اجرا می‌شوند (حبابِ تیره/خاص).
+            _base_n = len(detections)
+            _skip_variants = _IS_ANDROID and _base_n >= 2
+            if not (_IS_ANDROID and _base_n >= 3):
+                enhanced = self._clahe_enhance(piece_up)
+                detections += self.detect_text(enhanced)
 
-            
-            inverted = cv2.bitwise_not(piece_up)
-            detections += self.detect_text(inverted)
+            if not _skip_variants:
+                inverted = cv2.bitwise_not(piece_up)
+                detections += self.detect_text(inverted)
 
-            
-            gray = cv2.cvtColor(piece_up, cv2.COLOR_BGR2GRAY)
-            _, bw = cv2.threshold(gray, 160, 255, cv2.THRESH_BINARY)
-            if float(np.mean(bw)) < 127:
-                bw = cv2.bitwise_not(bw)
-            bw = cv2.dilate(bw, np.ones((2, 2), np.uint8), iterations=1)
-            bw_bgr = cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
-            detections += self.detect_text(bw_bgr)
+                
+                gray = cv2.cvtColor(piece_up, cv2.COLOR_BGR2GRAY)
+                _, bw = cv2.threshold(gray, 160, 255, cv2.THRESH_BINARY)
+                if float(np.mean(bw)) < 127:
+                    bw = cv2.bitwise_not(bw)
+                bw = cv2.dilate(bw, np.ones((2, 2), np.uint8), iterations=1)
+                bw_bgr = cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
+                detections += self.detect_text(bw_bgr)
 
-            
-            if scale < 2.0 and max(h_p, w_p) < 2800:
-                try:
-                    extra_scale = 2.0 / scale
-                    up_inv = cv2.resize(
-                        inverted, None, fx=extra_scale, fy=extra_scale,
-                        interpolation=cv2.INTER_CUBIC
-                    )
-                    up_inv_dets = self.detect_text(up_inv)
-                    for d in up_inv_dets:
-                        d["poly"] = (d["poly"].astype(np.float32) / extra_scale).astype(np.int32)
-                    detections += up_inv_dets
-                except Exception:
-                    pass
+                
+                if scale < 2.0 and max(h_p, w_p) < 2800:
+                    try:
+                        extra_scale = 2.0 / scale
+                        up_inv = cv2.resize(
+                            inverted, None, fx=extra_scale, fy=extra_scale,
+                            interpolation=cv2.INTER_CUBIC
+                        )
+                        up_inv_dets = self.detect_text(up_inv)
+                        for d in up_inv_dets:
+                            d["poly"] = (d["poly"].astype(np.float32) / extra_scale).astype(np.int32)
+                        detections += up_inv_dets
+                    except Exception:
+                        pass
 
         
         if scale != 1.0:
@@ -6476,9 +6495,15 @@ class MangaTranslator:
             n, lab, st, _cents = cv2.connectedComponentsWithStats(ink, connectivity=8)
             crop_area = float(max(1.0, h_c * w_c))
             clean = np.zeros_like(ink)
+            comp_ang: List[float] = []  # v1.28 — زاویهٔ هر حرف برای کراس‌چک
             for i in range(1, n):
                 a_ = int(st[i, cv2.CC_STAT_AREA])
-                if a_ < 12 or a_ > 0.15 * crop_area:
+                # 🩹 v1.28 — «برعکس چرخیده» روی گوشی: لکهٔ بزرگ (لوگوی نشانِ
+                # «وزارت آموزش» و امثالش) داخلِ برشِ جوهر، پروفایلِ شیب را
+                # به سمتی که خودش تراز می‌شود می‌کشاند و علامتِ زاویه را
+                # برعکس می‌کند. حرفِ واقعی به‌ندرت از ۸٪ برش بزرگ‌تر است؛
+                # لکهٔ ۱۰ تا ۲۰٪ = لوگو/لکه — رد.
+                if a_ < 12 or a_ > 0.08 * crop_area:
                     continue
                 x_c = int(st[i, cv2.CC_STAT_LEFT])
                 y_c = int(st[i, cv2.CC_STAT_TOP])
@@ -6503,6 +6528,15 @@ class MangaTranslator:
                     if border_span > 0.45 or aspect > 1.9:
                         continue
                 clean[lab == i] = 1
+                # v1.28 — زاویهٔ خودِ مؤلفه (لبهٔ بلندِ minAreaRect) ثبت می‌شود
+                # تا در پایان با نتیجهٔ پروفایل کراس‌چک شود.
+                try:
+                    _pc = np.column_stack(np.nonzero(lab == i))[:, ::-1].astype(np.float32)
+                    _ca = MangaTranslator._poly_long_side_angle(_pc)
+                    if abs(_ca) >= 3.0:
+                        comp_ang.append(_ca)
+                except Exception:
+                    pass
             if float(clean.mean()) < 0.008:
                 return 0.0
             ys_, xs_ = np.nonzero(clean)
@@ -6532,6 +6566,13 @@ class MangaTranslator:
             a = float(best_t)
             if abs(a) < 6.0 or abs(a) > 45.0:
                 return 0.0
+            # 🩹 v1.28 — کراس‌چکِ میانهٔ حروف: اگر پروفایل با میانهٔ زاویهٔ
+            # مؤلفه‌ها (حروف) علامتِ مخالفِ مطمئن دارد، حروف مبنا هستند —
+            # لکه/لوگوی حذف‌نشده نباید جهتِ متن را برگرداند.
+            if len(comp_ang) >= 3:
+                _med = float(np.median(comp_ang))
+                if abs(_med) >= 5.0 and (_med > 0.0) != (a > 0.0):
+                    return _med
             return a
         except Exception:
             return 0.0
@@ -6618,6 +6659,20 @@ class MangaTranslator:
                         kind = "dialogue"
             poly = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.int32)
             ang_ = self._estimate_angle_from_polys(line_polys)
+            # 🩹 v1.28 — ML Kit کادرِ محوری می‌دهد → ang_ همیشه ۰ و متنِ کج
+            # تخت رندر می‌شد. اگر polyها نشانه‌ای از شیب نداشتند، شیبِ جوهرِ
+            # برش (روباست در برابر لوگو) مبناست.
+            if abs(ang_) < 3.0:
+                try:
+                    _iy1, _iy2 = max(0, y1), min(image.shape[0], y2)
+                    _ix1, _ix2 = max(0, x1), min(image.shape[1], x2)
+                    if _ix2 - _ix1 >= 40 and _iy2 - _iy1 >= 14:
+                        a_ink2 = MangaTranslator._ink_slant_angle(
+                            image[_iy1:_iy2, _ix1:_ix2])
+                        if abs(a_ink2) >= 6.0:
+                            ang_ = a_ink2
+                except Exception:
+                    pass
             rx1, ry1, rw_, rh_ = x1, y1, bw, bh
             if line_polys and abs(ang_) >= 8.0:
                 # 🩹 v1.26 — متن کج: rect به کادر واقعی متن (شامل polyهای OCR)
@@ -7073,7 +7128,17 @@ class MangaTranslator:
                     ext = ".webp"
                 else:
                     ext = ".jpg"
-            out_file = os.path.join(dest_dir, f"page_{index:03d}{ext}")
+            # 🩹 v1.28 — «خروجی باید همون اسم ورودی باشه»: نامِ فایل از خودِ
+            # URL حفظ می‌شود (مثل ورودیِ فایل که manga.py دقیقاً همان نام را
+            # سیو می‌کند). page_NNN فقط وقتی URL نامِ قابل‌استفاده ندارد.
+            _base = os.path.splitext(os.path.basename(urlparse(hint_url or url).path))[0]
+            _base = re.sub(r'[\\/:*?"<>|]+', "_", _base).strip("._ ")[:80]
+            _stem = _base or f"page_{index:03d}"
+            out_file = os.path.join(dest_dir, f"{_stem}{ext}")
+            _k = 2
+            while os.path.exists(out_file):
+                out_file = os.path.join(dest_dir, f"{_stem}-{_k}{ext}")
+                _k += 1
             with open(out_file, "wb") as f:
                 f.write(content)
             arr = np.frombuffer(content, dtype=np.uint8)
@@ -8176,7 +8241,14 @@ html, body { background: #0a0a0b; }
                                 ext = ".webp"
                             else:
                                 ext = ".jpg"
-                        out_file = os.path.join(src_dir, f"page_{i:03d}{ext}")
+                        # 🩹 v1.28 — نامِ اصلیِ فایل از URL حفظ شود (نه page_NNN)
+                        _ub = os.path.splitext(os.path.basename(u.split("?")[0]))[0]
+                        _ub = re.sub(r'[\\/:*?"<>|]+', "_", _ub).strip("._ ")[:80]
+                        out_file = os.path.join(src_dir, f"{_ub or f'page_{i:03d}'}{ext}")
+                        _kk = 2
+                        while os.path.exists(out_file):
+                            out_file = os.path.join(src_dir, f"{_ub or f'page_{i:03d}'}-{_kk}{ext}")
+                            _kk += 1
                         with open(out_file, "wb") as f:
                             f.write(content)
                         arr = np.frombuffer(content, dtype=np.uint8)
@@ -8322,7 +8394,16 @@ html, body { background: #0a0a0b; }
                     ext_n = "." + (getattr(self, "img_format", None) or "webp").lstrip(".")
                     if ext_n == ".jpeg":
                         ext_n = ".jpg"
-                    out_n = os.path.join(norm_dir, f"page_{i+1:03d}{ext_n}")
+                    # 🩹 v1.28 — «خروجی همون اسم ورودی»: نامِ اصلی فایل حفظ
+                    # می‌شود (قبلاً همه page_001.jpg می‌شدند). برخورد نام →
+                    # پسوند -2، -3 ...
+                    _nb = os.path.splitext(os.path.basename(f))[0]
+                    _nb = re.sub(r'[\\/:*?"<>|]+', "_", _nb).strip() or f"page_{i+1:03d}"
+                    out_n = os.path.join(norm_dir, f"{_nb}{ext_n}")
+                    _k = 2
+                    while os.path.exists(out_n):
+                        out_n = os.path.join(norm_dir, f"{_nb}-{_k}{ext_n}")
+                        _k += 1
                     self._write_image(im, out_n)
                     normalized_files.append(out_n)
                 if normalized_files:

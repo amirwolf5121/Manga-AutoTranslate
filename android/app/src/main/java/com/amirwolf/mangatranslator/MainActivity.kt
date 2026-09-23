@@ -1129,7 +1129,12 @@ class MainActivity : AppCompatActivity() {
         val imgs = paths.indices.joinToString("") {
             "<img src=\"i/$it\" loading=\"lazy\" decoding=\"async\" alt=\"\" draggable=\"false\">"
         }
-        val html = assetHtml.replace("__TITLE__", title).replace("__IMGS__", imgs)
+        val html = assetHtml
+            .replace("__TITLE__", title)
+            .replace("__IMGS__", imgs)
+            // 🩹 v1.28 — «چرا دوتا دکمه x ضربدر داره»: ✕ِ داخل نوار خوانندهٔ وب
+            // پنهان می‌شود؛ فقط ✕ِ نیتیوِ بالا-راست می‌ماند (خروج تضمینی).
+            .replace("data-act=\"close\"", "data-act=\"close\" hidden")
 
         // 🩹 v1.26 — فراخوانیِ بارگذاری جا افتاده بود → WebView همیشه سیاه می‌ماند
         // (گزارش کاربر: «نمایش می‌زنم هیچی سیاهه»). baseURL باید https باشد تا
